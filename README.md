@@ -142,6 +142,8 @@ Respectez le règlement de C411 (ratio, durée de partage) ainsi que la législa
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements_test.txt
+# version de home-assistant-frontend : voir homeassistant/components/frontend/manifest.json
+pip install home-assistant-frontend==<version>
 pytest
 ```
 Les tests démarrent un vrai Home Assistant avec de faux serveurs C411 et qBittorrent (`tests/fakes.py`).

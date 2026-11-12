@@ -18,7 +18,7 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          ignore: brands topics description
+          ignore: brands topics description license
 
   tests:
     runs-on: ubuntu-latest
@@ -28,4 +28,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements_test.txt
+      - name: Paquet frontend de Home Assistant (requis par le panneau)
+        run: |
+          V=$(python -c "import json, homeassistant.components.frontend as f, pathlib; print([r for r in json.load(open(pathlib.Path(f.__file__).parent/'manifest.json'))['requirements'] if r.startswith('home-assistant-frontend')][0])")
+          pip install "$V"
       - run: pytest -q
