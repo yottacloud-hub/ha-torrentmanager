@@ -1,5 +1,5 @@
 /*
- * Panneau C411 pour Home Assistant
+ * Panneau TorrentManager (C411 + qBittorrent + Plex) pour Home Assistant
  * Nouveautés · Recherche · Téléchargements qBittorrent
  * Aucune dépendance, aucun build : un simple Web Component.
  */
@@ -41,6 +41,28 @@ const STATES = {
   unknown: ["Inconnu", "wait"],
 };
 const AUTO = "__auto__";
+const QORDER = ["2160p", "1080p", "720p", "sd"];
+const QLABEL = { "2160p": "4K", "1080p": "1080p", "720p": "720p", sd: "SD" };
+const LLABEL = { vf: "VF", vostfr: "VOSTFR", vo: "VO" };
+const SRCLABEL = { remux: "REMUX", bluray: "BluRay", web: "WEB-DL", webrip: "WEBRip", light: "Light", hdtv: "HDTV", dvd: "DVD", cam: "CAM" };
+const SRCSCORE = { remux: 40, bluray: 35, web: 30, webrip: 20, light: 10, hdtv: 5, dvd: 0, cam: -800 };
+
+/* Note d'une version : préférences (qualité, langue) puis réputation (sources, téléchargements…). */
+function versionScore(r, prefQ, prefL) {
+  const i = r.info || {};
+  const qi = QORDER.indexOf(i.quality || "sd"), pi = QORDER.indexOf(prefQ);
+  let sc = 1000 - Math.abs(qi - (pi < 0 ? 1 : pi)) * 300;
+  if (i.languages === prefL) sc += 500;
+  else if (prefL === "vf" && i.languages === "vostfr") sc += 150;
+  if (i.multi && prefL !== "vo") sc += 40;
+  sc += Math.round(Math.log10(1 + (r.seeders || 0)) * 120);
+  sc += Math.round(Math.log10(1 + (r.grabs || 0)) * 40);
+  if (r.freeleech) sc += 25;
+  sc += SRCSCORE[i.source] || 0;
+  if (i.proper) sc += 10;
+  if (!r.seeders) sc -= 400;
+  return sc;
+}
 const PAUSED = new Set(["pausedDL", "stoppedDL", "pausedUP", "stoppedUP"]);
 
 const nf1 = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
@@ -93,6 +115,9 @@ class C411Panel extends HTMLElement {
       qbCategory: null, paused: null,
       series: null, seriesError: null, seriesLoading: false, seriesFilter: "followed", seriesQuery: "",
       seriesBusy: new Set(),
+      view: { best: true, q: "all", l: "all" }, viewLoaded: false,
+      expanded: new Set(), art: {}, artAsked: new Set(),
+      perms: { view: true, download: true, manage: true },
     };
     this._built = false;
   }
@@ -131,9 +156,13 @@ class C411Panel extends HTMLElement {
       const cfg = await this._ws({ type: "c411/config" });
       this._s.config = cfg;
       this._s.qbCategory = AUTO;
+      this._s.perms = cfg.permissions || this._s.perms;
+      this._loadView(cfg);
       this._s.paused = !!cfg.start_paused;
       this._renderSendOptions();
+      this._renderViewOptions();
       this._renderChips();
+      this._renderLatest(); this._renderResults();
     } catch (e) { this._toast(this._msg(e), true); }
     this._loadLatest(false);
     this._loadTorrents();
@@ -164,8 +193,9 @@ class C411Panel extends HTMLElement {
       const r = await this._ws({ type: "c411/search", query: s.lastQuery, categories: [...s.cats], limit: 50, offset: s.offset });
       const items = r.results || [];
       s.results = append ? [...(s.results || []), ...items] : items;
-      s.more = items.length === 50;
-      s.offset += items.length;
+      const raw = r.raw_count ?? items.length;
+      s.more = raw === 50;
+      s.offset += raw;
     } catch (e) { s.searchError = this._msg(e); if (!append) s.results = []; }
     s.searchLoading = false; this._renderResults();
   }
@@ -217,7 +247,7 @@ class C411Panel extends HTMLElement {
       <style>${STYLE}</style>
       <div class="toolbar">
         <span id="menu"></span>
-        <div class="title"><ha-icon icon="mdi:movie-search"></ha-icon> C411</div>
+        <div class="title"><ha-icon icon="mdi:movie-search"></ha-icon> TorrentManager</div>
         <div class="stats" id="stats"></div>
       </div>
       <nav class="tabs" id="tabs">
@@ -237,6 +267,7 @@ class C411Panel extends HTMLElement {
               <span class="send-options"></span>
               <button class="ghost" data-action="refresh-latest" title="Rafraîchir"><ha-icon icon="mdi:refresh"></ha-icon></button>
             </div>
+            <div class="row view-options"></div>
           </div>
           <div id="list-latest" class="list"></div>
         </section>
@@ -254,6 +285,7 @@ class C411Panel extends HTMLElement {
                 <option value="size">Plus gros</option><option value="grabs">Plus téléchargés</option></select></label>
               <span class="send-options"></span>
             </div>
+            <div class="row view-options"></div>
           </div>
           <div id="list-search" class="list"></div>
         </section>
@@ -303,6 +335,7 @@ class C411Panel extends HTMLElement {
     root.addEventListener("change", (ev) => {
       if (ev.target.classList.contains("qbcat")) { this._s.qbCategory = ev.target.value; this._renderSendOptions(); }
       if (ev.target.classList.contains("paused")) { this._s.paused = ev.target.checked; this._renderSendOptions(); }
+      if (ev.target.classList.contains("bestonly")) { this._s.view.best = ev.target.checked; this._viewChanged(); }
       if (ev.target.dataset.pref) this._seriesPref(ev.target.dataset.key, ev.target.dataset.pref, ev.target.checked);
     });
     this._renderChips(); this._renderSendOptions(); this._renderStats();
@@ -310,12 +343,14 @@ class C411Panel extends HTMLElement {
   }
 
   _onClick(ev) {
-    const el = ev.target.closest("[data-tab],[data-action],[data-cat],[data-dl],[data-sf]");
+    const el = ev.target.closest("[data-tab],[data-action],[data-cat],[data-dl],[data-sf],[data-vq],[data-vl]");
     if (!el) return;
     const s = this._s;
     if (el.dataset.tab) return this._setTab(el.dataset.tab);
     if (el.dataset.dl) { s.dlFilter = el.dataset.dl; this._renderDownloads(); return; }
     if (el.dataset.sf) { s.seriesFilter = el.dataset.sf; this._renderSeries(); return; }
+    if (el.dataset.vq) { s.view.q = el.dataset.vq; return this._viewChanged(); }
+    if (el.dataset.vl) { s.view.l = el.dataset.vl; return this._viewChanged(); }
     if (el.dataset.cat !== undefined) {
       const set = el.dataset.scope === "latest" ? s.latestCats : s.cats;
       const c = el.dataset.cat;
@@ -335,6 +370,12 @@ class C411Panel extends HTMLElement {
       return;
     }
     if (a === "goto-downloads") return this._setTab("downloads");
+    if (a === "versions") {
+      const g = el.dataset.group;
+      s.expanded.has(g) ? s.expanded.delete(g) : s.expanded.add(g);
+      this._renderLatest(); this._renderResults();
+      return;
+    }
     if (a === "series-check") return this._seriesCall({ type: "c411/series_check" }, "Vérification terminée", "all");
     if (a === "series-library") return this._seriesCall({ type: "c411/series_check", library: true }, "Bibliothèque Plex relue", "all");
     if (a === "show-check") return this._seriesCall({ type: "c411/series_check", rating_key: el.dataset.key }, null, el.dataset.key);
@@ -377,7 +418,8 @@ class C411Panel extends HTMLElement {
     const html = `<label title="Destination dans qBittorrent. « Automatique » utilise le dossier et la catégorie réglés pour chaque type (Films, Séries…) dans les options."><ha-icon icon="mdi:folder-download"></ha-icon>
         <select class="qbcat">${opts.join("")}</select></label>
       <label class="check" title="Ajouter en pause"><input type="checkbox" class="paused" ${s.paused ? "checked" : ""}/> en pause</label>`;
-    this.shadowRoot.querySelectorAll(".send-options").forEach((el) => (el.innerHTML = html));
+    const ro = `<span class="hint"><ha-icon icon="mdi:eye-outline"></ha-icon> Consultation seule</span>`;
+    this.shadowRoot.querySelectorAll(".send-options").forEach((el) => (el.innerHTML = s.perms.download ? html : ro));
   }
 
   _renderStats() {
@@ -409,14 +451,6 @@ class C411Panel extends HTMLElement {
     return all[c] || c || "";
   }
 
-  _sorted(list) {
-    const k = this._s.sort;
-    const arr = [...list];
-    if (k === "date") arr.sort((a, b) => (b.published || "").localeCompare(a.published || ""));
-    else arr.sort((a, b) => (b[k] || 0) - (a[k] || 0));
-    return arr;
-  }
-
   _matchesTop(rel, set) {
     if (!set.size) return true;
     const top = new Set(this._topCats().map(([id]) => id));
@@ -430,7 +464,7 @@ class C411Panel extends HTMLElement {
     return map;
   }
 
-  _actionHtml(rel, list, byHash) {
+  _actionHtml(rel, list, byHash, compact = false) {
     const s = this._s;
     const t = rel.infohash && byHash.get(rel.infohash);
     if (t) {
@@ -438,33 +472,12 @@ class C411Panel extends HTMLElement {
       return `<button class="btn have" data-action="goto-downloads" title="Déjà dans qBittorrent">
         <ha-icon icon="${pct >= 100 ? "mdi:check-circle" : "mdi:progress-download"}"></ha-icon>${pct >= 100 ? "Téléchargé" : pct + " %"}</button>`;
     }
+    if (!s.perms.download) return "";
     if (s.sending.has(rel.guid)) return `<button class="btn primary" disabled><span class="spin"></span>Envoi…</button>`;
     if (s.sent.has(rel.guid)) return `<button class="btn have" data-action="goto-downloads"><ha-icon icon="mdi:check"></ha-icon>Envoyé</button>`;
     const dest = this._destination(rel);
-    return `<button class="btn primary" data-action="download" data-list="${list}" data-guid="${esc(rel.guid)}" title="${esc(dest ? "Destination : " + dest : "Envoyer à qBittorrent")}">
-      <ha-icon icon="mdi:download"></ha-icon>Télécharger</button>`;
-  }
-
-  _releaseHtml(rel, list, byHash) {
-    return `<article class="card rel" data-guid="${esc(rel.guid)}">
-      <div class="ico"><ha-icon icon="${this._icon(rel.categories)}"></ha-icon></div>
-      <div class="body">
-        <div class="t" title="${esc(rel.title)}">${esc(rel.title)}</div>
-        <div class="meta">
-          <span class="badge">${esc(this._catName(rel.categories))}</span>
-          <span><ha-icon icon="mdi:harddisk"></ha-icon>${bytes(rel.size)}</span>
-          <span class="seed" title="Sources"><ha-icon icon="mdi:arrow-up-bold-circle"></ha-icon>${rel.seeders}</span>
-          <span class="leech" title="Clients"><ha-icon icon="mdi:arrow-down-bold-circle"></ha-icon>${rel.leechers}</span>
-          <span title="Téléchargements complétés"><ha-icon icon="mdi:check-all"></ha-icon>${rel.grabs}</span>
-          <span title="${esc(rel.published ? new Date(rel.published).toLocaleString("fr-FR") : "")}"><ha-icon icon="mdi:clock-outline"></ha-icon>${esc(ago(rel.published))}</span>
-          ${rel.freeleech ? `<span class="badge free">Freeleech</span>` : ""}
-        </div>
-      </div>
-      <div class="act">
-        ${rel.details_url ? `<a class="ghost" href="${esc(rel.details_url)}" target="_blank" rel="noopener noreferrer" title="Voir la fiche sur C411"><ha-icon icon="mdi:open-in-new"></ha-icon></a>` : ""}
-        <span class="slot">${this._actionHtml(rel, list, byHash)}</span>
-      </div>
-    </article>`;
+    return `<button class="btn primary ${compact ? "xs" : ""}" data-action="download" data-list="${list}" data-guid="${esc(rel.guid)}" title="${esc(dest ? "Destination : " + dest : "Envoyer à qBittorrent")}">
+      <ha-icon icon="mdi:download"></ha-icon>${compact ? "" : "Télécharger"}</button>`;
   }
 
   _refreshBadges() {
@@ -473,26 +486,168 @@ class C411Panel extends HTMLElement {
     for (const [list, items] of [["latest", this._s.latest], ["search", this._s.results || []]]) {
       const container = root.getElementById(`list-${list}`); if (!container) continue;
       const map = new Map(items.map((r) => [r.guid, r]));
-      container.querySelectorAll("article.rel").forEach((card) => {
-        const rel = map.get(card.dataset.guid); if (!rel) return;
-        const slot = card.querySelector(".slot");
+      container.querySelectorAll(".slot[data-guid]").forEach((slot) => {
+        const rel = map.get(slot.dataset.guid); if (!rel) return;
         const html = this._actionHtml(rel, list, byHash);
         if (slot.dataset.h !== html) { slot.innerHTML = html; slot.dataset.h = html; }
       });
     }
   }
 
+  // ---------------------------------------------------------------- versions & affiches
+  _loadView(cfg) {
+    const v = this._s.view;
+    v.best = cfg.best_only !== false;
+    this._s.prefQ = cfg.pref_quality || "1080p";
+    this._s.prefL = cfg.pref_language || "vf";
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("c411-view") || "null");
+      if (saved) Object.assign(v, saved);
+    } catch (e) { /* stockage indisponible : réglages par défaut */ }
+  }
+
+  _viewChanged() {
+    try { window.localStorage.setItem("c411-view", JSON.stringify(this._s.view)); } catch (e) { /* ignoré */ }
+    this._renderViewOptions(); this._renderLatest(); this._renderResults();
+  }
+
+  _renderViewOptions() {
+    const v = this._s.view;
+    const seg = (attr, cur, opts) => `<span class="seg">${opts.map(([val, label]) =>
+      `<button data-${attr}="${val}" class="${cur === val ? "on" : ""}">${label}</button>`).join("")}</span>`;
+    const html = `<span class="vlabel">Qualité</span>${seg("vq", v.q, [["all", "Toutes"], ["2160p", "4K"], ["1080p", "1080p"], ["720p", "720p"]])}
+      <span class="vlabel">Langue</span>${seg("vl", v.l, [["all", "Toutes"], ["vf", "VF / MULTi"], ["vostfr", "VOSTFR"]])}
+      <label class="sw" title="Regroupe les versions d'un même film ou épisode et n'affiche que la mieux notée (qualité et langue préférées, puis réputation : sources, téléchargements)">
+        <input type="checkbox" class="bestonly" ${v.best ? "checked" : ""}><span></span>Meilleure version seulement</label>`;
+    this.shadowRoot.querySelectorAll(".view-options").forEach((el) => (el.innerHTML = html));
+  }
+
+  /* Filtre qualité/langue, puis regroupe par contenu. Renvoie [{group, best, versions}]. */
+  _groups(list) {
+    const s = this._s, v = s.view;
+    const prefQ = v.q !== "all" ? v.q : s.prefQ || "1080p";
+    const prefL = v.l !== "all" ? v.l : s.prefL || "vf";
+    let items = list;
+    if (v.q !== "all") items = items.filter((r) => (r.info?.quality || "sd") === v.q);
+    if (v.l !== "all") items = items.filter((r) => (r.info?.languages || "vo") === v.l);
+    const scored = items.map((r) => ({ r, sc: versionScore(r, prefQ, prefL) }));
+    if (!v.best) return scored.map(({ r }) => ({ group: r.guid, best: r, versions: [r] }));
+    const map = new Map();
+    for (const it of scored) {
+      const g = it.r.info?.group || it.r.guid;
+      if (!map.has(g)) map.set(g, []);
+      map.get(g).push(it);
+    }
+    return [...map.entries()].map(([group, arr]) => {
+      arr.sort((a, b) => b.sc - a.sc);
+      return { group, best: arr[0].r, versions: arr.map((x) => x.r) };
+    });
+  }
+
+  _sortedGroups(groups) {
+    const k = this._s.sort;
+    const val = (g) => k === "date" ? Math.max(...g.versions.map((r) => Date.parse(r.published || 0) || 0)) : (g.best[k] || 0);
+    return groups.sort((a, b) => val(b) - val(a));
+  }
+
+  _askArtwork(groups) {
+    const s = this._s;
+    const items = [];
+    for (const g of groups) {
+      const r = g.best, i = r.info || {};
+      if (s.artAsked.has(g.group) || !["movies", "series", "anime"].includes(r.content_type)) continue;
+      s.artAsked.add(g.group);
+      items.push({
+        key: g.group, group: i.group || null, kind: i.kind || null, name: i.name || null,
+        year: i.year || null, season: i.season || null, tmdbid: r.tmdbid || null, imdbid: r.imdbid || null,
+        content_type: r.content_type,
+      });
+    }
+    for (let n = 0; n < items.length; n += 60) {
+      this._ws({ type: "c411/artwork", items: items.slice(n, n + 60) }).then((res) => {
+        Object.assign(s.art, res.artwork || {});
+        if (res.error && !this._artErr) { this._artErr = true; this._toast(`Affiches : ${res.error}`, true); }
+        this._renderLatest(); this._renderResults();
+      }).catch(() => {});
+    }
+  }
+
+  _versionTags(r) {
+    const i = r.info || {};
+    const tags = [QLABEL[i.quality] || "SD", (i.multi ? "MULTi" : LLABEL[i.languages] || "VO")];
+    if (SRCLABEL[i.source]) tags.push(SRCLABEL[i.source]);
+    if (i.codec === "x265") tags.push("x265");
+    for (const h of i.hdr || []) tags.push(h);
+    return tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("");
+  }
+
+  _groupHtml(g, list, byHash) {
+    const r = g.best, art = this._s.art[g.group];
+    const others = g.versions.length - 1;
+    const open = this._s.expanded.has(g.group);
+    const visual = art?.poster
+      ? `<img class="poster-sm" loading="lazy" src="${esc(art.poster)}" alt="">`
+      : `<div class="ico"><ha-icon icon="${this._icon(r.categories)}"></ha-icon></div>`;
+    const heading = art?.title
+      ? `<div class="t">${esc(art.title)}${art.year ? ` <span class="muted">(${art.year})</span>` : ""}${this._episodeLabel(r)}
+          ${art.vote ? `<span class="vote" title="Note TMDB"><ha-icon icon="mdi:star"></ha-icon>${nf1.format(art.vote)}</span>` : ""}</div>
+         <div class="sub" title="${esc(r.title)}">${esc(r.title)}</div>`
+      : `<div class="t" title="${esc(r.title)}">${esc(r.title)}</div>`;
+    const versions = open && others ? `<ul class="versions">${g.versions.map((v, idx) => `
+        <li class="${idx === 0 ? "top" : ""}">
+          <span class="tags">${this._versionTags(v)}</span>
+          <span class="vt" title="${esc(v.title)}">${esc(v.title)}</span>
+          <span class="muted nowrap">${bytes(v.size)} · <span class="seed">${v.seeders}</span> src · ${v.grabs} DL</span>
+          <span class="slot" data-guid="${esc(v.guid)}">${this._actionHtml(v, list, byHash, true)}</span>
+        </li>`).join("")}</ul>` : "";
+    return `<article class="card rel ${art?.poster ? "has-poster" : ""}">
+      ${visual}
+      <div class="body">
+        ${heading}
+        <div class="meta">
+          <span class="tags">${this._versionTags(r)}</span>
+          <span><ha-icon icon="mdi:harddisk"></ha-icon>${bytes(r.size)}</span>
+          <span class="seed" title="Sources"><ha-icon icon="mdi:arrow-up-bold-circle"></ha-icon>${r.seeders}</span>
+          <span class="leech" title="Clients"><ha-icon icon="mdi:arrow-down-bold-circle"></ha-icon>${r.leechers}</span>
+          <span title="Téléchargements complétés"><ha-icon icon="mdi:check-all"></ha-icon>${r.grabs}</span>
+          <span title="${esc(r.published ? new Date(r.published).toLocaleString("fr-FR") : "")}"><ha-icon icon="mdi:clock-outline"></ha-icon>${esc(ago(r.published))}</span>
+          ${r.freeleech ? `<span class="badge free">Freeleech</span>` : ""}
+          ${others ? `<button class="linkbtn" data-action="versions" data-group="${esc(g.group)}">
+              <ha-icon icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>${open ? "Masquer" : `+${others} version${others > 1 ? "s" : ""}`}</button>` : ""}
+        </div>
+        ${versions}
+      </div>
+      <div class="act">
+        ${r.details_url ? `<a class="ghost" href="${esc(r.details_url)}" target="_blank" rel="noopener noreferrer" title="Voir la fiche sur C411"><ha-icon icon="mdi:open-in-new"></ha-icon></a>` : ""}
+        <span class="slot" data-guid="${esc(r.guid)}">${this._actionHtml(r, list, byHash)}</span>
+      </div>
+    </article>`;
+  }
+
+  _episodeLabel(r) {
+    const i = r.info || {};
+    if (i.kind === "episode") return ` <span class="ep">S${String(i.season).padStart(2, "0")}E${String(i.episodes[0]).padStart(2, "0")}${i.episodes.length > 1 ? "-E" + String(i.episodes.at(-1)).padStart(2, "0") : ""}</span>`;
+    if (i.kind === "pack") return ` <span class="ep">Saison ${i.season}</span>`;
+    return "";
+  }
+
+  _listHtml(items, list) {
+    const byHash = this._torrentByHash();
+    const groups = this._sortedGroups(this._groups(items));
+    this._askArtwork(groups);
+    return { html: groups.map((g) => this._groupHtml(g, list, byHash)).join(""), count: groups.length };
+  }
+
   _renderLatest() {
     const el = this.shadowRoot.getElementById("list-latest"); if (!el) return;
     const s = this._s;
     if (s.latestLoading && !s.latest.length) { el.innerHTML = skeleton(); return; }
-    const items = this._sorted(s.latest.filter((r) => this._matchesTop(r, s.latestCats)));
-    const byHash = this._torrentByHash();
+    const items = s.latest.filter((r) => this._matchesTop(r, s.latestCats));
+    const { html: listHtml, count } = this._listHtml(items, "latest");
     let html = "";
     if (s.latestError) html += `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.latestError)}</div>`;
-    if (s.latestUpdate) html += `<div class="hint">Mis à jour ${esc(ago(s.latestUpdate))} · ${items.length} release${items.length > 1 ? "s" : ""}${s.latestLoading ? " · actualisation…" : ""}</div>`;
-    html += items.length ? items.map((r) => this._releaseHtml(r, "latest", byHash)).join("")
-      : empty("mdi:inbox", "Aucune nouveauté pour ces catégories.");
+    if (s.latestUpdate) html += `<div class="hint">Mis à jour ${esc(ago(s.latestUpdate))} · ${count} contenu${count > 1 ? "s" : ""}${count !== items.length ? ` (${items.length} releases)` : ""}${s.latestLoading ? " · actualisation…" : ""}</div>`;
+    html += count ? listHtml : empty("mdi:inbox", "Aucune nouveauté pour ces filtres.");
     el.innerHTML = html;
   }
 
@@ -505,11 +660,9 @@ class C411Panel extends HTMLElement {
       el.innerHTML = html + empty("mdi:movie-search-outline", "Cherchez un film, une série, un album…<br><small>C411 limite l'API à 15 requêtes par minute.</small>");
       return;
     }
-    const byHash = this._torrentByHash();
-    const items = this._sorted(s.results);
-    html += items.length ? `<div class="hint">${items.length} résultat${items.length > 1 ? "s" : ""}${s.lastQuery ? ` pour « ${esc(s.lastQuery)} »` : ""}</div>` +
-      items.map((r) => this._releaseHtml(r, "search", byHash)).join("")
-      : empty("mdi:emoticon-sad-outline", "Aucun résultat. Essayez moins de mots ou une autre catégorie.");
+    const { html: listHtml, count } = this._listHtml(s.results, "search");
+    html += count ? `<div class="hint">${count} contenu${count > 1 ? "s" : ""}${count !== s.results.length ? ` (${s.results.length} releases)` : ""}${s.lastQuery ? ` pour « ${esc(s.lastQuery)} »` : ""}</div>` + listHtml
+      : empty("mdi:emoticon-sad-outline", s.results.length ? "Aucune version ne correspond aux filtres qualité / langue." : "Aucun résultat. Essayez moins de mots ou une autre catégorie.");
     if (s.more) html += `<button class="btn more" data-action="more" ${s.searchLoading ? "disabled" : ""}>${s.searchLoading ? '<span class="spin"></span>' : ""}Afficher plus</button>`;
     el.innerHTML = html;
   }
@@ -539,15 +692,16 @@ class C411Panel extends HTMLElement {
     const paused = PAUSED.has(t.state);
     const confirm = this._s.confirm === t.hash;
     const h = esc(t.hash);
-    const actions = confirm
+    const perms = this._s.perms;
+    const actions = !perms.download ? "" : confirm
       ? `<span class="confirm">Supprimer ?
           <button class="btn danger sm" data-action="delete" data-hash="${h}">Torrent seul</button>
           <button class="btn danger sm" data-action="delete_files" data-hash="${h}">+ fichiers</button>
           <button class="ghost" data-action="cancel" title="Annuler"><ha-icon icon="mdi:close"></ha-icon></button></span>`
       : `<button class="ghost" data-action="${paused ? "resume" : "pause"}" data-hash="${h}" title="${paused ? "Reprendre" : "Pause"}">
             <ha-icon icon="${paused ? "mdi:play" : "mdi:pause"}"></ha-icon></button>
-         <button class="ghost" data-action="recheck" data-hash="${h}" title="Revérifier"><ha-icon icon="mdi:file-check-outline"></ha-icon></button>
-         <button class="ghost" data-action="confirm" data-hash="${h}" title="Supprimer"><ha-icon icon="mdi:delete-outline"></ha-icon></button>`;
+         ${perms.manage ? `<button class="ghost" data-action="recheck" data-hash="${h}" title="Revérifier"><ha-icon icon="mdi:file-check-outline"></ha-icon></button>
+         <button class="ghost" data-action="confirm" data-hash="${h}" title="Supprimer"><ha-icon icon="mdi:delete-outline"></ha-icon></button>` : ""}`;
     const left = done ? bytes(t.size) : `${bytes(t.size - (t.amount_left || 0))} / ${bytes(t.size)}`;
     return `<article class="card tor ${kind}">
       <div class="top">
@@ -619,7 +773,7 @@ class C411Panel extends HTMLElement {
     const s = this._s;
     root.querySelectorAll("#chips-series .chip").forEach((c) => c.classList.toggle("on", c.dataset.sf === s.seriesFilter));
     const busyAll = s.seriesBusy.has("all");
-    root.querySelectorAll('[data-action="series-check"],[data-action="series-library"]').forEach((b) => (b.disabled = busyAll));
+    root.querySelectorAll('[data-action="series-check"],[data-action="series-library"]').forEach((b) => (b.disabled = busyAll || !s.perms.download));
     const status = root.getElementById("series-status");
     if (s.seriesError) { el.innerHTML = `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.seriesError)}</div>`; return; }
     if (!s.series) { el.innerHTML = skeleton(); status.textContent = ""; return; }
@@ -668,12 +822,12 @@ class C411Panel extends HTMLElement {
       return `<li><b>${esc(a.key)}</b>
         <span class="tags"><span class="tag">${esc(a.quality)}</span><span class="tag">${esc({ vf: "VF", vostfr: "VOSTFR", vo: "VO" }[a.languages] || a.languages)}</span></span>
         <span class="muted" title="${esc(a.title)}">${bytes(a.size)} · ${a.seeders} src</span>
-        <button class="btn primary xs" data-action="ep-grab" data-key="${k}" data-ep="${esc(a.key)}" title="${esc(a.title)}" ${busy ? "disabled" : ""}>
-          ${busy ? '<span class="spin"></span>' : '<ha-icon icon="mdi:download"></ha-icon>'}</button></li>`;
+        ${s.perms.download ? `<button class="btn primary xs" data-action="ep-grab" data-key="${k}" data-ep="${esc(a.key)}" title="${esc(a.title)}" ${busy ? "disabled" : ""}>
+          ${busy ? '<span class="spin"></span>' : '<ha-icon icon="mdi:download"></ha-icon>'}</button>` : ""}</li>`;
     }).join("");
     const grabbed = x.grabbed.map((g) => `<li><b>${esc(g.code)}</b>
         <span class="muted" title="${esc(g.title)}">envoyé ${esc(ago(g.at))}${g.auto ? " · auto" : ""}</span>
-        <button class="ghost sm" data-action="ep-forget" data-key="${k}" data-ep="${esc(g.code)}" title="Oublier (permet de le retélécharger)"><ha-icon icon="mdi:backup-restore"></ha-icon></button></li>`).join("");
+        ${s.perms.manage ? `<button class="ghost sm" data-action="ep-forget" data-key="${k}" data-ep="${esc(g.code)}" title="Oublier (permet de le retélécharger)"><ha-icon icon="mdi:backup-restore"></ha-icon></button>` : ""}</li>`).join("");
     const checking = s.seriesBusy.has(x.rating_key);
     return `<article class="card show ${x.follow ? "" : "off"}">
       <div class="poster">${poster}</div>
@@ -683,9 +837,9 @@ class C411Panel extends HTMLElement {
           <span>${x.episode_count} ép. · ${x.season_count} saison${x.season_count > 1 ? "s" : ""}</span></div>
         <div class="row tight">${x.follow ? statusPill : `<span class="pill2">Non suivie</span>`}</div>
         <div class="switches">
-          <label class="sw"><input type="checkbox" data-pref="follow" data-key="${k}" ${x.follow ? "checked" : ""}><span></span>Suivre</label>
-          <label class="sw ${x.follow ? "" : "dis"}" title="Télécharger automatiquement les nouveaux épisodes"><input type="checkbox" data-pref="auto" data-key="${k}" ${x.auto ? "checked" : ""} ${x.follow ? "" : "disabled"}><span></span>Auto</label>
-          <button class="ghost sm" data-action="show-check" data-key="${k}" title="Chercher sur C411 maintenant" ${checking ? "disabled" : ""}>
+          <label class="sw ${s.perms.manage ? "" : "dis"}"><input type="checkbox" data-pref="follow" data-key="${k}" ${x.follow ? "checked" : ""} ${s.perms.manage ? "" : "disabled"}><span></span>Suivre</label>
+          <label class="sw ${x.follow && s.perms.manage ? "" : "dis"}" title="Télécharger automatiquement les nouveaux épisodes"><input type="checkbox" data-pref="auto" data-key="${k}" ${x.auto ? "checked" : ""} ${x.follow && s.perms.manage ? "" : "disabled"}><span></span>Auto</label>
+          <button class="ghost sm" data-action="show-check" data-key="${k}" title="Chercher sur C411 maintenant" ${checking || !s.perms.download ? "disabled" : ""}>
             ${checking ? '<span class="spin"></span>' : '<ha-icon icon="mdi:magnify"></ha-icon>'}</button>
         </div>
         ${avail ? `<ul class="eps">${avail}</ul>` : ""}
@@ -829,6 +983,27 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
   border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); font-size: 14px; }
 .toast.err { background: var(--c-err); color: #fff; }
 [hidden] { display: none !important; }
+.view-options { gap: 8px; font-size: 13px; }
+.vlabel { color: var(--c-sub); }
+.seg { display: inline-flex; border: 1px solid var(--c-div); border-radius: 999px; overflow: hidden; background: var(--c-card); }
+.seg button { all: unset; cursor: pointer; padding: 4px 10px; font-size: 12.5px; color: var(--primary-text-color); }
+.seg button + button { border-left: 1px solid var(--c-div); }
+.seg button.on { background: var(--c-accent); color: #fff; }
+.view-options .sw { margin-left: 6px; }
+.poster-sm { flex: none; width: 54px; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; background: var(--c-div); align-self: flex-start; }
+.rel.has-poster { align-items: flex-start; }
+.rel .sub { font-size: 12px; color: var(--c-sub); margin-top: 1px; word-break: break-all; }
+.ep { font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--c-accent) 14%, transparent); color: var(--c-accent); }
+.vote { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--c-warn); font-weight: 600; margin-left: 4px; }
+.vote ha-icon { --mdc-icon-size: 14px; }
+.linkbtn { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; color: var(--c-accent); font-weight: 500; }
+.linkbtn:hover { text-decoration: underline; }
+.versions { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.versions li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 4px 6px 4px 8px; border-radius: 8px; background: var(--secondary-background-color, rgba(0,0,0,.04)); }
+.versions li.top { background: color-mix(in srgb, var(--c-ok) 10%, transparent); }
+.versions .vt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-sub); }
+.nowrap { white-space: nowrap; }
+.versions .btn.have { min-width: 0; padding: 4px 10px; font-size: 12px; }
 .grow { flex: 1; }
 .filter { min-width: 140px; border-radius: 999px; padding: 6px 12px; }
 .btn.outline { border: 1px solid var(--c-div); color: var(--primary-text-color); }
@@ -886,6 +1061,8 @@ button[disabled] { opacity: .6; cursor: default; }
   .show .poster { width: 64px; }
   .eps li .tags { display: none; }
   .filter { flex: 1; min-width: 0; }
+  .versions .vt { display: none; }
+  .vlabel { display: none; }
 }
 `;
 

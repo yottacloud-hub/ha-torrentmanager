@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 
 # Catégories précises qui priment sur la règle « premier chiffre »
 _SPECIFIC = {
@@ -49,3 +50,23 @@ def resolve_destination(
     if save_path is None:
         save_path = options.get(f"path_{ctype}") or options.get("qb_save_path") or None
     return (category or None), (save_path or None)
+
+
+_ADULT_WORDS = {"XXX", "PORN", "PORNO", "HENTAI"}
+
+
+def is_adult(release: dict) -> bool:
+    """Contenu pour adultes : catégories 6xxx de C411, ou titre explicite."""
+    cats = [str(c) for c in release.get("categories") or []]
+    if any(c.startswith("6") for c in cats):
+        return True
+    if cats:
+        # Catégorie connue et non adulte : on ne juge pas sur le titre (ex. le film « xXx »)
+        return False
+    words = {w.upper() for w in re.split(r"[^A-Za-z0-9]+", release.get("title") or "")}
+    return bool(words & _ADULT_WORDS)
+
+
+def filter_adult(releases: list[dict], hide: bool) -> list[dict]:
+    """Retire le contenu adulte si demandé."""
+    return [r for r in releases if not is_adult(r)] if hide else releases

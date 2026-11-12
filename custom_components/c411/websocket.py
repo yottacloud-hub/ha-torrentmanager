@@ -12,8 +12,17 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .api import C411Error, QBittorrentError
+from .content import filter_adult
 from .const import (
     CATEGORIES,
+    CONF_HIDE_ADULT,
+    CONF_BEST_ONLY,
+    CONF_PREF_LANGUAGE,
+    CONF_PREF_QUALITY,
+    CONF_USER_ACCESS,
+    DEFAULT_PREF_LANGUAGE,
+    DEFAULT_PREF_QUALITY,
+    DEFAULT_USER_ACCESS,
     CONTENT_TYPES,
     CONF_QB_CATEGORY,
     CONF_QB_SAVE_PATH,
@@ -32,6 +41,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     for handler in (
         ws_config, ws_latest, ws_search, ws_download, ws_torrents, ws_action,
         ws_series, ws_series_update, ws_series_check, ws_series_grab, ws_series_forget,
+        ws_artwork,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -40,11 +50,40 @@ def _err(connection: websocket_api.ActiveConnection, msg: dict, err: Exception) 
     connection.send_error(msg["id"], "c411_error", str(err))
 
 
-@websocket_api.require_admin
+_LEVELS = {"admins": 0, "view": 1, "download": 2, "full": 3}
+_NEED = {"view": 1, "download": 2, "manage": 3}
+
+
+def _permissions(hass: HomeAssistant, user) -> dict[str, bool]:
+    """Ce que l'utilisateur connecté a le droit de faire."""
+    if user is not None and user.is_admin:
+        return {"view": True, "download": True, "manage": True}
+    from . import get_entry  # noqa: PLC0415
+
+    try:
+        access = get_entry(hass).options.get(CONF_USER_ACCESS, DEFAULT_USER_ACCESS)
+    except HomeAssistantError:
+        access = "admins"
+    level = _LEVELS.get(access, 0)
+    return {k: level >= v for k, v in _NEED.items()}
+
+
+def _check(hass: HomeAssistant, connection, msg: dict, need: str) -> bool:
+    if _permissions(hass, connection.user)[need]:
+        return True
+    connection.send_error(
+        msg["id"], websocket_api.ERR_UNAUTHORIZED,
+        "Votre compte n'a pas le droit de faire cette action (réglage « Accès des utilisateurs »).",
+    )
+    return False
+
+
 @websocket_api.websocket_command({vol.Required("type"): "c411/config"})
 @websocket_api.async_response
 async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Configuration utile au panneau."""
+    if not _check(hass, connection, msg, "view"):
+        return
     from . import get_entry  # noqa: PLC0415 (import circulaire)
 
     try:
@@ -76,17 +115,23 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
                 for t, label in CONTENT_TYPES.items()
             ],
             "plex": rt.series is not None,
+            "tmdb": rt.tmdb is not None,
+            "best_only": entry.options.get(CONF_BEST_ONLY, True),
+            "pref_quality": entry.options.get(CONF_PREF_QUALITY, DEFAULT_PREF_QUALITY),
+            "pref_language": entry.options.get(CONF_PREF_LANGUAGE, DEFAULT_PREF_LANGUAGE),
+            "permissions": _permissions(hass, connection.user),
         },
     )
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {vol.Required("type"): "c411/latest", vol.Optional("refresh", default=False): bool}
 )
 @websocket_api.async_response
 async def ws_latest(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Dernières releases (depuis le cache du coordinateur)."""
+    if not _check(hass, connection, msg, "view"):
+        return
     from . import get_runtime  # noqa: PLC0415
 
     try:
@@ -106,7 +151,6 @@ async def ws_latest(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     )
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "c411/search",
@@ -119,6 +163,8 @@ async def ws_latest(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 @websocket_api.async_response
 async def ws_search(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Recherche sur C411."""
+    if not _check(hass, connection, msg, "view"):
+        return
     from . import get_runtime  # noqa: PLC0415
 
     try:
@@ -130,10 +176,15 @@ async def ws_search(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     except (HomeAssistantError, C411Error) as err:
         _err(connection, msg, err)
         return
-    connection.send_result(msg["id"], {"results": [r.as_dict() for r in results]})
+    from . import get_entry  # noqa: PLC0415
+
+    hide = get_entry(hass).options.get(CONF_HIDE_ADULT, True)
+    connection.send_result(
+        msg["id"],
+        {"results": filter_adult([r.as_dict() for r in results], hide), "raw_count": len(results)},
+    )
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "c411/download",
@@ -149,6 +200,8 @@ async def ws_search(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 @websocket_api.async_response
 async def ws_download(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Envoie une release vers qBittorrent."""
+    if not _check(hass, connection, msg, "download"):
+        return
     from . import async_send_to_qbittorrent  # noqa: PLC0415
 
     try:
@@ -163,13 +216,14 @@ async def ws_download(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     connection.send_result(msg["id"], result)
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {vol.Required("type"): "c411/torrents", vol.Optional("live", default=True): bool}
 )
 @websocket_api.async_response
 async def ws_torrents(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """État de qBittorrent."""
+    if not _check(hass, connection, msg, "view"):
+        return
     from . import get_runtime  # noqa: PLC0415
 
     try:
@@ -181,7 +235,6 @@ async def ws_torrents(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     connection.send_result(msg["id"], data)
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "c411/torrent_action",
@@ -192,6 +245,8 @@ async def ws_torrents(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
 @websocket_api.async_response
 async def ws_action(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Pause / reprise / suppression."""
+    if not _check(hass, connection, msg, "download" if msg["action"] in ("pause", "resume") else "manage"):
+        return
     from . import get_runtime  # noqa: PLC0415
 
     try:
@@ -219,11 +274,12 @@ def _series_payload(series) -> dict[str, Any]:
     return data
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "c411/series"})
 @websocket_api.async_response
 async def ws_series(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Séries Plex et épisodes disponibles."""
+    if not _check(hass, connection, msg, "view"):
+        return
     try:
         series = _series(hass)
     except HomeAssistantError as err:
@@ -235,7 +291,6 @@ async def ws_series(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     connection.send_result(msg["id"], _series_payload(series))
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "c411/series_update",
@@ -247,6 +302,8 @@ async def ws_series(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 @websocket_api.async_response
 async def ws_series_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Suivre / ne plus suivre une série."""
+    if not _check(hass, connection, msg, "manage"):
+        return
     try:
         series = _series(hass)
         if series is None:
@@ -258,7 +315,6 @@ async def ws_series_update(hass: HomeAssistant, connection, msg: dict[str, Any])
     connection.send_result(msg["id"], _series_payload(series))
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "c411/series_check",
@@ -269,6 +325,8 @@ async def ws_series_update(hass: HomeAssistant, connection, msg: dict[str, Any])
 @websocket_api.async_response
 async def ws_series_check(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Relit Plex et/ou cherche les nouveaux épisodes (toutes les séries ou une seule)."""
+    if not _check(hass, connection, msg, "download"):
+        return
     try:
         series = _series(hass)
         if series is None:
@@ -282,13 +340,14 @@ async def ws_series_check(hass: HomeAssistant, connection, msg: dict[str, Any]) 
     connection.send_result(msg["id"], _series_payload(series))
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {vol.Required("type"): "c411/series_grab", vol.Required("rating_key"): str, vol.Required("key"): str}
 )
 @websocket_api.async_response
 async def ws_series_grab(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Télécharge un épisode disponible."""
+    if not _check(hass, connection, msg, "download"):
+        return
     try:
         series = _series(hass)
         if series is None:
@@ -300,13 +359,14 @@ async def ws_series_grab(hass: HomeAssistant, connection, msg: dict[str, Any]) -
     connection.send_result(msg["id"], _series_payload(series))
 
 
-@websocket_api.require_admin
 @websocket_api.websocket_command(
     {vol.Required("type"): "c411/series_forget", vol.Required("rating_key"): str, vol.Required("code"): str}
 )
 @websocket_api.async_response
 async def ws_series_forget(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Oublie un épisode récupéré (il pourra être retéléchargé)."""
+    if not _check(hass, connection, msg, "manage"):
+        return
     try:
         series = _series(hass)
         if series is None:
@@ -316,3 +376,54 @@ async def ws_series_forget(hass: HomeAssistant, connection, msg: dict[str, Any])
         _err(connection, msg, err)
         return
     connection.send_result(msg["id"], _series_payload(series))
+
+
+# --------------------------------------------------------------------- affiches
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "c411/artwork",
+        vol.Required("items"): vol.All(
+            [
+                {
+                    vol.Required("key"): str,
+                    vol.Optional("group"): vol.Any(str, None),
+                    vol.Optional("kind"): vol.Any(str, None),
+                    vol.Optional("name"): vol.Any(str, None),
+                    vol.Optional("year"): vol.Any(int, None),
+                    vol.Optional("season"): vol.Any(int, None),
+                    vol.Optional("tmdbid"): vol.Any(str, int, None),
+                    vol.Optional("imdbid"): vol.Any(str, int, None),
+                    vol.Optional("content_type"): vol.Any(str, None),
+                }
+            ],
+            vol.Length(max=60),
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_artwork(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Affiches (TMDB, sinon Plex pour les séries de la bibliothèque)."""
+    if not _check(hass, connection, msg, "view"):
+        return
+    from . import get_runtime  # noqa: PLC0415
+    from .tmdb import TmdbError  # noqa: PLC0415
+
+    try:
+        rt = get_runtime(hass)
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    items = [i for i in msg["items"] if i.get("content_type") in ("movies", "series", "anime", None)]
+    result: dict[str, Any] = {}
+    error = None
+    if rt.tmdb is not None and items:
+        try:
+            result = await rt.tmdb.lookup(items)
+        except TmdbError as err:
+            error = str(err)
+    if rt.series is not None:
+        for item in items:
+            current = result.get(item["key"])
+            if not (current and current.get("poster")) and (url := rt.series.poster_for(item)):
+                result[item["key"]] = {**(current or {}), "poster": url}
+    connection.send_result(msg["id"], {"artwork": result, "error": error})

@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to C411",
+        "title": "TorrentManager — connect to C411",
         "description": "Generate an API key on the “Intégrations API” page of your C411 account ({integrations_url}).",
         "data": {
           "c411_url": "Site URL",
@@ -54,9 +54,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "C411 options",
+        "title": "TorrentManager options",
         "menu_options": {
           "general": "General (new releases, qBittorrent)",
+          "display": "Display and user access",
           "folders": "Folders and categories per type",
           "plex": "Plex connection",
           "series": "TV show tracking"
@@ -126,11 +127,25 @@
           "plex_interval": "Plex library reload interval",
           "series_notify": "Home Assistant notification for each episode sent"
         }
+      },
+      "display": {
+        "title": "Display and access",
+        "description": "Posters come from TMDB: create a free account on themoviedb.org, then Settings → API to get a key. Without a key, only your Plex shows get a poster.",
+        "data": {
+          "hide_adult": "Hide adult content",
+          "best_only": "Show only the best version of each title (default)",
+          "pref_quality": "Preferred quality for picking the best version",
+          "pref_language": "Preferred language for picking the best version",
+          "tmdb_api_key": "TMDB API key (posters, optional)",
+          "user_access": "Access for non-admin users"
+        }
       }
     },
     "error": {
       "invalid_plex_token": "Plex token rejected.",
-      "cannot_connect_plex": "Cannot reach the Plex server."
+      "cannot_connect_plex": "Cannot reach the Plex server.",
+      "invalid_tmdb_key": "TMDB key rejected.",
+      "cannot_connect_tmdb": "Cannot reach TMDB."
     },
     "abort": {
       "plex_required": "Set up the Plex connection first."

@@ -1,4 +1,4 @@
-"""Assistant de configuration C411."""
+"""Assistant de configuration TorrentManager."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .plex import PlexAuthError, PlexClient, PlexError
+from .tmdb import TmdbAuthError, TmdbClient, TmdbError
 from .api import (
     C411AuthError,
     C411Client,
@@ -41,7 +42,18 @@ from .api import (
     QBittorrentError,
 )
 from .const import (
+    ACCESS_LEVELS,
+    APP_NAME,
     CATEGORIES,
+    CONF_BEST_ONLY,
+    CONF_HIDE_ADULT,
+    CONF_PREF_LANGUAGE,
+    CONF_PREF_QUALITY,
+    CONF_TMDB_KEY,
+    CONF_USER_ACCESS,
+    DEFAULT_PREF_LANGUAGE,
+    DEFAULT_PREF_QUALITY,
+    DEFAULT_USER_ACCESS,
     CONF_CAT_PREFIX,
     CONF_PATH_PREFIX,
     CONF_PLEX_INTERVAL,
@@ -184,7 +196,7 @@ class C411ConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 self._data.update(user_input)
                 return self.async_create_entry(
-                    title="C411",
+                    title=APP_NAME,
                     data=self._data,
                     options={
                         CONF_QB_TAG: DEFAULT_QB_TAG,
@@ -264,7 +276,7 @@ class C411OptionsFlow(OptionsFlow):
             return []
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="init", menu_options=["general", "folders", "plex", "series"])
+        return self.async_show_menu(step_id="init", menu_options=["general", "display", "folders", "plex", "series"])
 
     # ---------------------------------------------------------------- général
     async def async_step_general(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -297,6 +309,48 @@ class C411OptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="general", data_schema=schema)
+
+    # ---------------------------------------------------------------- affichage & accès
+    async def async_step_display(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            key = (user_input.get(CONF_TMDB_KEY) or "").strip()
+            user_input[CONF_TMDB_KEY] = key
+            if key:
+                session = aiohttp.ClientSession()
+                try:
+                    await TmdbClient(self.hass, session, key).validate()
+                except TmdbAuthError:
+                    errors["base"] = "invalid_tmdb_key"
+                except TmdbError as err:
+                    _LOGGER.warning("TMDB injoignable : %s", err)
+                    errors["base"] = "cannot_connect_tmdb"
+                finally:
+                    await session.close()
+            if not errors:
+                return self._save(user_input, blank=(CONF_TMDB_KEY,))
+
+        opts = {**self.config_entry.options, **(user_input or {})}
+        q_options = [SelectOptionDict(value=k, label=v) for k, v in QUALITIES.items()]
+        l_options = [SelectOptionDict(value=k, label=v) for k, v in LANGUAGE_GROUPS.items()]
+        a_options = [SelectOptionDict(value=k, label=v) for k, v in ACCESS_LEVELS.items()]
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_HIDE_ADULT, default=opts.get(CONF_HIDE_ADULT, True)): BooleanSelector(),
+                vol.Required(CONF_BEST_ONLY, default=opts.get(CONF_BEST_ONLY, True)): BooleanSelector(),
+                vol.Required(CONF_PREF_QUALITY, default=opts.get(CONF_PREF_QUALITY, DEFAULT_PREF_QUALITY)): SelectSelector(
+                    SelectSelectorConfig(options=q_options, mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_PREF_LANGUAGE, default=opts.get(CONF_PREF_LANGUAGE, DEFAULT_PREF_LANGUAGE)): SelectSelector(
+                    SelectSelectorConfig(options=l_options, mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Optional(CONF_TMDB_KEY, description={"suggested_value": opts.get(CONF_TMDB_KEY)}): PASSWORD,
+                vol.Required(CONF_USER_ACCESS, default=opts.get(CONF_USER_ACCESS, DEFAULT_USER_ACCESS)): SelectSelector(
+                    SelectSelectorConfig(options=a_options, mode=SelectSelectorMode.LIST)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="display", data_schema=schema, errors=errors)
 
     # ---------------------------------------------------------------- dossiers
     async def async_step_folders(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

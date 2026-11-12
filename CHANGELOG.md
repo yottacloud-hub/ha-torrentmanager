@@ -4,6 +4,27 @@ Les versions suivent [SemVer](https://semver.org/lang/fr/) : `MAJEUR.MINEUR.CORR
 Pour publier une version : augmenter `version` dans `custom_components/c411/manifest.json`,
 ajouter sa section ci-dessous, puis fusionner sur `main`. La release GitHub est créée automatiquement.
 
+## [1.2.0] - 2026-11-12
+
+### Ajouté
+- **Meilleure version seulement** : les différentes releases d'un même film ou épisode sont regroupées ;
+  seule la mieux notée s'affiche, avec un lien « +N versions » pour voir les autres.
+  La note tient compte de la qualité et de la langue préférées, puis de la réputation
+  (sources, téléchargements complétés, freeleech, source BluRay/WEB, PROPER).
+- **Filtres rapides** dans Nouveautés et Recherche : qualité (Toutes, 4K, 1080p, 720p), langue (Toutes, VF/MULTi, VOSTFR).
+  Ils sont mémorisés par navigateur.
+- Étiquettes de version lisibles : qualité, langue, source, codec, HDR / Dolby Vision.
+- **Affiches** : via TMDB (clé API gratuite, facultative), avec titre français, année et note.
+  Les épisodes de vos séries Plex utilisent l'affiche Plex.
+- **Contenu adulte masqué** par défaut (option).
+- **Accès des utilisateurs non administrateurs** : administrateurs uniquement, consultation seule,
+  consultation et téléchargement (par défaut), ou accès complet.
+- Nouvel écran d'options « Affichage et accès ».
+
+### Modifié
+- L'application s'appelle désormais **TorrentManager** (barre latérale, panneau, intégration, HACS).
+  L'identifiant technique `c411` est conservé : rien à reconfigurer.
+
 ## [1.1.0] - 2026-11-12
 
 ### Ajouté
