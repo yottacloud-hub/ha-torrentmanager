@@ -100,7 +100,7 @@
       },
       "plex": {
         "title": "Connexion Plex",
-        "description": "Adresse du serveur, ex. `http://192.168.1.20:32400`. Pour trouver le jeton : dans Plex Web, ouvrez un épisode → ⋯ → « Obtenir des infos » → « Afficher le XML » ; le jeton est la valeur `X-Plex-Token` dans l'adresse. Videz l'adresse pour déconnecter Plex.",
+        "description": "Adresse du serveur, ex. `http://192.168.1.20:32400`. Pour trouver le jeton : dans Plex Web, ouvrez un épisode → ⋯ → « Obtenir des infos » → « Afficher le XML » ; le jeton est la valeur `X-Plex-Token` dans l'adresse. Videz l'adresse pour déconnecter Plex. Le même jeton sert aussi pour les affiches et les recommandations.",
         "data": {
           "plex_url": "Adresse du serveur Plex",
           "plex_token": "Jeton Plex (X-Plex-Token)",
@@ -130,13 +130,13 @@
       },
       "display": {
         "title": "Affichage et accès",
-        "description": "Les affiches viennent de TMDB : créez un compte gratuit sur themoviedb.org, puis Paramètres → API pour obtenir une clé. Sans clé, seules vos séries Plex ont une affiche.",
+        "description": "Les affiches et les recommandations viennent du catalogue Plex, avec le jeton déjà saisi dans « Connexion Plex ». Une clé TMDB n'est utile que si vous n'utilisez pas Plex, ou en complément.",
         "data": {
           "hide_adult": "Masquer le contenu pour adultes",
           "best_only": "N'afficher que la meilleure version de chaque contenu (par défaut)",
           "pref_quality": "Qualité préférée pour choisir la meilleure version",
           "pref_language": "Langue préférée pour choisir la meilleure version",
-          "tmdb_api_key": "Clé API TMDB (affiches, facultatif)",
+          "tmdb_api_key": "Clé API TMDB (facultatif, inutile si Plex est connecté)",
           "user_access": "Accès des utilisateurs non administrateurs"
         }
       }

@@ -193,8 +193,11 @@ class C411Panel extends HTMLElement {
     try {
       const msg = { type: "c411/search", query: s.lastQuery, categories: [...s.cats], limit: 50, offset: s.offset };
       if (s.byId) {
-        msg.tmdbid = s.byId.id; msg.media = s.byId.media; msg.categories = [];
+        msg.categories = [];
         msg.query = s.byId.original_title || s.byId.title;
+        if (s.byId.tmdbid) msg.tmdbid = s.byId.tmdbid;
+        else if (s.byId.imdbid) msg.imdbid = s.byId.imdbid;
+        if (msg.tmdbid || msg.imdbid) msg.media = s.byId.media;
       }
       const r = await this._ws(msg);
       const items = r.results || [];
@@ -391,7 +394,7 @@ class C411Panel extends HTMLElement {
       return;
     }
     if (a === "close-hint") {
-      try { window.localStorage.setItem("c411-hint-tmdb", "1"); } catch (e) { /* ignoré */ }
+      try { window.localStorage.setItem("c411-hint-art", "1"); } catch (e) { /* ignoré */ }
       this._renderLatest(); this._renderResults();
       return;
     }
@@ -618,7 +621,7 @@ class C411Panel extends HTMLElement {
       : `<div class="ico"><ha-icon icon="${this._icon(r.categories)}"></ha-icon></div>`;
     const heading = art?.title
       ? `<div class="t">${esc(art.title)}${art.year ? ` <span class="muted">(${art.year})</span>` : ""}${this._episodeLabel(r)}
-          ${art.vote ? `<span class="vote" title="Note TMDB"><ha-icon icon="mdi:star"></ha-icon>${nf1.format(art.vote)}</span>` : ""}</div>
+          ${art.vote ? `<span class="vote" title="Note du public"><ha-icon icon="mdi:star"></ha-icon>${nf1.format(art.vote)}</span>` : ""}</div>
          <div class="sub" title="${esc(r.title)}">${esc(r.title)}</div>`
       : `<div class="t" title="${esc(r.title)}">${esc(r.title)}</div>`;
     const versions = open && others ? `<ul class="versions">${g.versions.map((v, idx) => `
@@ -668,16 +671,16 @@ class C411Panel extends HTMLElement {
 
   _posterHint() {
     const s = this._s;
-    if (!s.config || s.config.tmdb || !s.perms.manage || this._hintClosed()) return "";
+    if (!s.config || s.config.artwork || !s.perms.manage || this._hintClosed()) return "";
     return `<div class="notice info"><ha-icon icon="mdi:image-outline"></ha-icon>
-      <span>Pour afficher les affiches des films et séries, ajoutez une clé TMDB gratuite :
-      <b>Paramètres → Appareils et services → TorrentManager → Configurer → Affichage et accès</b>.
-      Sans clé, seules vos séries Plex ont une affiche.</span>
+      <span>Pour afficher les affiches des films et séries, connectez Plex :
+      <b>Paramètres → Appareils et services → TorrentManager → Configurer → Connexion Plex</b>.
+      Les affiches et les recommandations viennent du catalogue Plex, sans autre compte.</span>
       <button class="ghost sm" data-action="close-hint" title="Masquer"><ha-icon icon="mdi:close"></ha-icon></button></div>`;
   }
 
   _hintClosed() {
-    try { return window.localStorage.getItem("c411-hint-tmdb") === "1"; } catch (e) { return false; }
+    try { return window.localStorage.getItem("c411-hint-art") === "1"; } catch (e) { return false; }
   }
 
   _renderLatest() {
@@ -909,7 +912,7 @@ class C411Panel extends HTMLElement {
     else if (!s.recs) html += `<div class="recgrid">${Array.from({ length: 8 }, () => '<div class="card skel rec-skel"></div>').join("")}</div>`;
     else if (!s.recs.configured) {
       html += `<div class="notice info"><ha-icon icon="mdi:star-shooting-outline"></ha-icon><span>${s.perms.manage
-        ? `Les recommandations utilisent TMDB. Ajoutez une clé gratuite dans <b>Paramètres → Appareils et services → TorrentManager → Configurer → Affichage et accès</b>.`
+        ? `Les recommandations utilisent le catalogue Plex. Connectez Plex dans <b>Paramètres → Appareils et services → TorrentManager → Configurer → Connexion Plex</b>.`
         : "Les recommandations ne sont pas encore activées par l'administrateur."}</span></div>`;
     } else if (!s.recs.items.length) {
       html += empty("mdi:movie-open-star-outline", s.recs.seeds.length
@@ -920,7 +923,7 @@ class C411Panel extends HTMLElement {
       html += `<div class="hint">D'après ${seeds.slice(0, 6).map(esc).join(", ")}${seeds.length > 6 ? ` et ${seeds.length - 6} autre${seeds.length - 6 > 1 ? "s" : ""}` : ""}.</div>`;
       html += `<div class="recgrid">${s.recs.items.map((r, i) => this._recHtml(r, i)).join("")}</div>`;
     }
-    // Populaire en ce moment (sans clé TMDB aussi)
+    // Populaire en ce moment (toujours disponible)
     const pop = this._groups(s.latest.filter((r) => ["movies", "series", "anime"].includes(r.content_type)))
       .sort((a, b) => (b.best.grabs || 0) - (a.best.grabs || 0)).slice(0, 8);
     if (pop.length) {

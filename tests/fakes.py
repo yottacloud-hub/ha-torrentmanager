@@ -164,6 +164,7 @@ def make_plex_app(state: dict) -> web.Application:
     """Faux Plex : une bibliothèque de séries et une de films."""
     state.setdefault("plex_shows", {
         "100": {"title": "Shōgun", "year": 2024, "guids": ["tmdb://126308", "imdb://tt2788316"],
+                "plex_guid": "plex://show/5d9c086c46115600200aa2fe",
                 "owned": [(1, e) for e in range(1, 11)] + [(2, 1), (2, 2)]},
         "101": {"title": "Le Bureau des Légendes", "year": 2015, "guids": ["tmdb://62852"],
                 "owned": [(s, e) for s in range(1, 6) for e in range(1, 11)]},
@@ -193,7 +194,8 @@ def make_plex_app(state: dict) -> web.Application:
             return mc(Metadata=[])
         return mc(Metadata=[
             {"ratingKey": k, "title": v["title"], "year": v["year"], "thumb": f"/library/metadata/{k}/thumb/1",
-             "leafCount": len(v["owned"]), "Guid": [{"id": g} for g in v["guids"]]}
+             "leafCount": len(v["owned"]), "Guid": [{"id": g} for g in v["guids"]],
+             **({"guid": v["plex_guid"]} if v.get("plex_guid") else {})}
             for k, v in state["plex_shows"].items()
         ])
 
@@ -286,4 +288,75 @@ def make_tmdb_app(state: dict) -> web.Application:
         return web.json_response({"results": []})
 
     app.router.add_get("/3/search/tv", search_tv)
+    return app
+
+
+DUNE2 = "5d776be17a53e9001e732ab9"
+SHOGUN = "5d9c086c46115600200aa2fe"
+CATALOG = [
+    {"type": "movie", "ratingKey": DUNE2, "guid": f"plex://movie/{DUNE2}", "title": "Dune : Deuxième partie",
+     "originalTitle": "Dune: Part Two", "year": 2024, "thumb": "https://metadata-static.plex.tv/dune2.jpg",
+     "audienceRating": 8.2, "summary": "Paul Atréides s'unit à Chani…", "Guid": [{"id": "tmdb://693134"}, {"id": "imdb://tt15239678"}]},
+    {"type": "movie", "ratingKey": "5d776a8b9ab544002150043a", "title": "Dune", "year": 2021,
+     "thumb": "https://metadata-static.plex.tv/dune1.jpg", "audienceRating": 7.8, "Guid": [{"id": "tmdb://438631"}]},
+    {"type": "movie", "ratingKey": "5d7768333c3c2a001fbcab72", "title": "Blade Runner 2049", "year": 2017,
+     "thumb": "https://metadata-static.plex.tv/br.jpg", "rating": 7.6},
+    {"type": "show", "ratingKey": SHOGUN, "title": "Shōgun", "year": 2024, "thumb": "https://metadata-static.plex.tv/shogun.jpg",
+     "audienceRating": 8.6},
+    {"type": "show", "ratingKey": "5d9c08b3ffd9ef001e99f5ae", "title": "The Last Kingdom", "year": 2015,
+     "thumb": "https://metadata-static.plex.tv/tlk.jpg", "audienceRating": 8.4},
+    {"type": "movie", "ratingKey": "5f0c7b5a8f4a2c0040b7c0de", "title": "Le Comte de Monte-Cristo", "year": 2024,
+     "thumb": "/library/metadata/5f0c7b5a8f4a2c0040b7c0de/thumb/1", "audienceRating": 7.9},
+]
+META_IMAGE = b"\xff\xd8\xffplex-meta-image"
+
+
+def make_plex_online_app(state: dict) -> web.Application:
+    """Faux catalogue Plex (discover + metadata sur un seul serveur)."""
+    from custom_components.c411.matcher import normalize
+
+    state.setdefault("plex_online_calls", [])
+
+    @web.middleware
+    async def auth(request, handler):
+        state["plex_online_calls"].append(request.path_qs)
+        if request.headers.get("X-Plex-Token") != PLEX_TOKEN:
+            return web.Response(status=401)
+        return await handler(request)
+
+    async def search(request):
+        q = normalize(request.query.get("query", ""))
+        types = request.query.get("searchTypes", "movies,tv")
+        wanted = {"movies": "movie", "tv": "show"}
+        allowed = {wanted[t] for t in types.split(",") if t in wanted}
+        found = [m for m in CATALOG if m["type"] in allowed
+                 and (q in normalize(m["title"]) or q in normalize(m.get("originalTitle", "")))]
+        return web.json_response({"MediaContainer": {"SearchResults": [
+            {"id": "plex", "SearchResult": []},
+            {"id": "external", "SearchResult": [{"score": 1, "Metadata": m} for m in found]},
+        ]}})
+
+    async def related(request):
+        if request.match_info["id"] == DUNE2:
+            return web.json_response({"MediaContainer": {"Hub": [{"title": "Similaires", "Metadata": [CATALOG[1], CATALOG[2], CATALOG[0]]}]}})
+        return web.Response(status=404)
+
+    async def item(request):
+        if request.match_info["id"] == SHOGUN:
+            return web.json_response({"MediaContainer": {"Metadata": [{**CATALOG[3], "Similar": [{"tag": "The Last Kingdom"}]}]}})
+        return web.Response(status=404)
+
+    async def image(request):
+        return web.Response(body=META_IMAGE, content_type="image/jpeg")
+
+    async def not_found(request):
+        return web.Response(status=404)
+
+    app = web.Application(middlewares=[auth])
+    app.router.add_get("/library/search", search)
+    app.router.add_get("/library/metadata/{id}/related", related)
+    app.router.add_get("/hubs/metadata/{id}/related", not_found)
+    app.router.add_get("/library/metadata/{id}/similar", not_found)
+    app.router.add_get("/library/metadata/{id}/thumb/{n}", image)
+    app.router.add_get("/library/metadata/{id}", item)
     return app

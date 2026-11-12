@@ -78,6 +78,7 @@ from .const import (
 )
 from .content import content_type, filter_adult, resolve_destination
 from .plex import PlexClient
+from .plexmeta import PlexDiscover
 from .recommend import Recommender
 from .tmdb import TmdbClient
 from .series import SeriesCoordinator
@@ -265,6 +266,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_register_websocket(hass)
     # Les vues HTTP doivent être déclarées avant le démarrage du serveur web
     hass.http.register_view(PlexPosterView())
+    hass.http.register_view(PlexMetaImageView())
     return True
 
 
@@ -317,6 +319,9 @@ async def _async_setup_series(hass: HomeAssistant, entry: C411ConfigEntry) -> No
         opts[CONF_PLEX_TOKEN],
     )
     series = SeriesCoordinator(hass, entry, plex, entry.runtime_data.c411)
+    plex_meta = PlexDiscover(hass, async_get_clientsession(hass), opts[CONF_PLEX_TOKEN])
+    plex_meta.image_secret = series.poster_secret
+    entry.runtime_data.plex_meta = plex_meta
     await series.async_load()
     # Plex injoignable ne doit pas empêcher le reste de fonctionner
     await series.async_refresh()
@@ -371,6 +376,29 @@ class PlexPosterView(HomeAssistantView):
         body, ctype = poster
         return web.Response(body=body, content_type=ctype.split(";")[0],
                             headers={"Cache-Control": "private, max-age=86400"})
+
+
+class PlexMetaImageView(HomeAssistantView):
+    """Images relatives du catalogue Plex (le jeton reste côté serveur)."""
+
+    url = "/api/c411/plex/meta-image"
+    name = "api:c411:plex_meta_image"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.StreamResponse:
+        hass = request.app[KEY_HASS]
+        try:
+            rt = get_runtime(hass)
+        except HomeAssistantError:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        meta, path = rt.plex_meta, request.query.get("p", "")
+        if meta is None or request.query.get("s") != meta.image_secret or not path.startswith("/"):
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        image = await meta.image(path)
+        if image is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        return web.Response(body=image[0], content_type=image[1].split(";")[0],
+                            headers={"Cache-Control": "private, max-age=604800"})
 
 
 async def _async_reload(hass: HomeAssistant, entry: C411ConfigEntry) -> None:

@@ -116,6 +116,7 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
             ],
             "plex": rt.series is not None,
             "tmdb": rt.tmdb is not None,
+            "artwork": rt.tmdb is not None or rt.plex_meta is not None,
             "best_only": entry.options.get(CONF_BEST_ONLY, True),
             "pref_quality": entry.options.get(CONF_PREF_QUALITY, DEFAULT_PREF_QUALITY),
             "pref_language": entry.options.get(CONF_PREF_LANGUAGE, DEFAULT_PREF_LANGUAGE),
@@ -414,10 +415,11 @@ async def ws_series_forget(hass: HomeAssistant, connection, msg: dict[str, Any])
 )
 @websocket_api.async_response
 async def ws_artwork(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
-    """Affiches (TMDB, sinon Plex pour les séries de la bibliothèque)."""
+    """Affiches : catalogue Plex, puis TMDB (facultatif), puis bibliothèque Plex."""
     if not _check(hass, connection, msg, "view"):
         return
     from . import get_runtime  # noqa: PLC0415
+    from .plexmeta import PlexMetaError  # noqa: PLC0415
     from .tmdb import TmdbError  # noqa: PLC0415
 
     try:
@@ -428,11 +430,19 @@ async def ws_artwork(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
     items = [i for i in msg["items"] if i.get("content_type") in ("movies", "series", "anime", None)]
     result: dict[str, Any] = {}
     error = None
-    if rt.tmdb is not None and items:
+    # Plex d'abord (aucune clé supplémentaire), puis TMDB si une clé est configurée
+    for provider in (p for p in (rt.plex_meta, rt.tmdb) if p is not None):
+        todo = [i for i in items if not (result.get(i["key"]) or {}).get("poster")]
+        if not todo:
+            break
         try:
-            result = await rt.tmdb.lookup(items)
-        except TmdbError as err:
+            found = await provider.lookup(todo)
+        except (TmdbError, PlexMetaError) as err:
             error = str(err)
+            continue
+        for key, data in found.items():
+            if data and (data.get("poster") or not result.get(key)):
+                result[key] = data
     if rt.series is not None:
         for item in items:
             current = result.get(item["key"])
@@ -451,12 +461,13 @@ async def ws_recommendations(hass: HomeAssistant, connection, msg: dict[str, Any
     if not _check(hass, connection, msg, "view"):
         return
     from . import get_runtime  # noqa: PLC0415
+    from .plexmeta import PlexMetaError  # noqa: PLC0415
     from .tmdb import TmdbError  # noqa: PLC0415
 
     try:
         rt = get_runtime(hass)
         result = await rt.recommender.build(rt, refresh=msg["refresh"])
-    except (HomeAssistantError, TmdbError) as err:
+    except (HomeAssistantError, TmdbError, PlexMetaError) as err:
         _err(connection, msg, err)
         return
     connection.send_result(msg["id"], result)

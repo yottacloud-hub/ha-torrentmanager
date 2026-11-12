@@ -100,7 +100,7 @@
       },
       "plex": {
         "title": "Plex connection",
-        "description": "Server address, e.g. `http://192.168.1.20:32400`. To find the token: in Plex Web open an episode → ⋯ → “Get Info” → “View XML”; the token is the `X-Plex-Token` value in the URL. Clear the address to disconnect Plex.",
+        "description": "Server address, e.g. `http://192.168.1.20:32400`. To find the token: in Plex Web open an episode → ⋯ → “Get Info” → “View XML”; the token is the `X-Plex-Token` value in the URL. Clear the address to disconnect Plex. The same token is also used for posters and recommendations.",
         "data": {
           "plex_url": "Plex server URL",
           "plex_token": "Plex token (X-Plex-Token)",
@@ -130,13 +130,13 @@
       },
       "display": {
         "title": "Display and access",
-        "description": "Posters come from TMDB: create a free account on themoviedb.org, then Settings → API to get a key. Without a key, only your Plex shows get a poster.",
+        "description": "Posters and recommendations come from the Plex catalogue, using the token from “Plex connection”. A TMDB key is only useful without Plex, or as a complement.",
         "data": {
           "hide_adult": "Hide adult content",
           "best_only": "Show only the best version of each title (default)",
           "pref_quality": "Preferred quality for picking the best version",
           "pref_language": "Preferred language for picking the best version",
-          "tmdb_api_key": "TMDB API key (posters, optional)",
+          "tmdb_api_key": "TMDB API key (optional, not needed with Plex)",
           "user_access": "Access for non-admin users"
         }
       }

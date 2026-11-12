@@ -86,7 +86,7 @@ async def test_display_and_access(
     assert msg["success"], msg
     art = msg["result"]["artwork"]
     assert art["a"]["poster"].endswith("/dune.jpg") and art["a"]["title"] == "Dune : Deuxième partie"
-    assert art["b"]["year"] == 2023 and art["c"]["vote"] == 8.6 and art["d"] is None
+    assert art["b"]["year"] == 2023 and art["c"]["vote"] == 8.6 and art.get("d") is None
     n = len(servers["tmdb_calls"])
     await ws.send_json({"id": 5, "type": "c411/artwork", "items": items})
     assert (await ws.receive_json())["success"]

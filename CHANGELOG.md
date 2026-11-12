@@ -4,6 +4,18 @@ Les versions suivent [SemVer](https://semver.org/lang/fr/) : `MAJEUR.MINEUR.CORR
 Pour publier une version : augmenter `version` dans `custom_components/c411/manifest.json`,
 ajouter sa section ci-dessous, puis fusionner sur `main`. La release GitHub est créée automatiquement.
 
+## [1.4.0] - 2026-11-12
+
+### Modifié
+- **Affiches et recommandations via Plex** : elles viennent maintenant du catalogue en ligne de Plex,
+  avec le jeton déjà saisi dans « Connexion Plex ». Aucune autre clé n'est nécessaire.
+  - Affiches, titre français, année, note du public et résumé.
+  - Recommandations : titres liés (et à défaut « similaires ») à vos téléchargements C411 et à vos séries suivies,
+    sans ce qui est déjà dans votre bibliothèque Plex.
+  - Les images relatives du catalogue passent par Home Assistant (le jeton n'est jamais envoyé au navigateur).
+- TMDB devient facultatif : il ne sert qu'en complément, ou si Plex n'est pas connecté.
+- Le message du panneau invite à connecter Plex (et non plus à créer une clé TMDB).
+
 ## [1.3.0] - 2026-11-12
 
 ### Corrigé
