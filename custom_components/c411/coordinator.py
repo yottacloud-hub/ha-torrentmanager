@@ -49,6 +49,7 @@ class C411RuntimeData:
     qbit: QBittorrentClient
     feed: C411FeedCoordinator
     downloads: QBittorrentCoordinator
+    series: Any = None  # SeriesCoordinator quand Plex est configuré
 
 
 class C411FeedCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):

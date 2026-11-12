@@ -40,6 +40,7 @@ const STATES = {
   error: ["Erreur", "err"],
   unknown: ["Inconnu", "wait"],
 };
+const AUTO = "__auto__";
 const PAUSED = new Set(["pausedDL", "stoppedDL", "pausedUP", "stoppedUP"]);
 
 const nf1 = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
@@ -90,6 +91,8 @@ class C411Panel extends HTMLElement {
       sending: new Set(), sent: new Set(),
       confirm: null,
       qbCategory: null, paused: null,
+      series: null, seriesError: null, seriesLoading: false, seriesFilter: "followed", seriesQuery: "",
+      seriesBusy: new Set(),
     };
     this._built = false;
   }
@@ -111,7 +114,12 @@ class C411Panel extends HTMLElement {
 
   _startPolling() {
     if (this._timer || !this._hass) return;
-    this._timer = setInterval(() => { if (!document.hidden) this._loadTorrents(); }, 4000);
+    let tick = 0;
+    this._timer = setInterval(() => {
+      if (document.hidden) return;
+      this._loadTorrents();
+      if (++tick % 15 === 0) this._loadSeries();
+    }, 4000);
   }
 
   async _init() {
@@ -122,13 +130,14 @@ class C411Panel extends HTMLElement {
     try {
       const cfg = await this._ws({ type: "c411/config" });
       this._s.config = cfg;
-      this._s.qbCategory = cfg.default_category || "";
+      this._s.qbCategory = AUTO;
       this._s.paused = !!cfg.start_paused;
       this._renderSendOptions();
       this._renderChips();
     } catch (e) { this._toast(this._msg(e), true); }
     this._loadLatest(false);
     this._loadTorrents();
+    this._loadSeries();
   }
 
   _ws(msg) { return this._hass.callWS(msg); }
@@ -177,11 +186,15 @@ class C411Panel extends HTMLElement {
     if (!rel.download_url || s.sending.has(rel.guid)) return;
     s.sending.add(rel.guid); this._refreshBadges();
     try {
-      const msg = { type: "c411/download", url: rel.download_url, title: rel.title, paused: !!s.paused };
-      if (s.qbCategory) msg.category = s.qbCategory;
+      const msg = {
+        type: "c411/download", url: rel.download_url, title: rel.title, paused: !!s.paused,
+        categories: rel.categories || [], content_type: rel.content_type || undefined,
+      };
+      if (s.qbCategory !== AUTO) msg.category = s.qbCategory;
       await this._ws(msg);
       s.sent.add(rel.guid);
-      this._toast(`Envoyé à qBittorrent : ${rel.title}`);
+      const dest = this._destination(rel);
+      this._toast(`Envoyé à qBittorrent${dest ? " → " + dest : ""} : ${rel.title}`);
       setTimeout(() => this._loadTorrents(), 1500);
     } catch (e) { this._toast(this._msg(e), true); }
     s.sending.delete(rel.guid); this._refreshBadges();
@@ -210,6 +223,7 @@ class C411Panel extends HTMLElement {
       <nav class="tabs" id="tabs">
         <button data-tab="latest" class="active"><ha-icon icon="mdi:new-box"></ha-icon><span>Nouveautés</span></button>
         <button data-tab="search"><ha-icon icon="mdi:magnify"></ha-icon><span>Recherche</span></button>
+        <button data-tab="series"><ha-icon icon="mdi:television-play"></ha-icon><span>Séries</span><b id="sercount"></b></button>
         <button data-tab="downloads"><ha-icon icon="mdi:download"></ha-icon><span>Téléchargements</span><b id="dlcount"></b></button>
       </nav>
       <main>
@@ -243,6 +257,23 @@ class C411Panel extends HTMLElement {
           </div>
           <div id="list-search" class="list"></div>
         </section>
+        <section id="pane-series" hidden>
+          <div class="controls">
+            <div class="row">
+              <div class="chips" id="chips-series">
+                <button class="chip" data-sf="followed">Suivies</button>
+                <button class="chip" data-sf="available">Nouveaux épisodes</button>
+                <button class="chip" data-sf="all">Toutes</button>
+              </div>
+              <input id="series-q" type="search" class="filter" placeholder="Filtrer…" autocomplete="off" />
+              <span class="grow"></span>
+              <button class="btn outline sm" data-action="series-library" title="Relire la bibliothèque Plex"><ha-icon icon="mdi:plex"></ha-icon>Relire Plex</button>
+              <button class="btn primary sm" data-action="series-check" title="Chercher les nouveaux épisodes sur C411"><ha-icon icon="mdi:magnify-scan"></ha-icon>Vérifier maintenant</button>
+            </div>
+            <div class="hint" id="series-status"></div>
+          </div>
+          <div id="list-series" class="grid"></div>
+        </section>
         <section id="pane-downloads" hidden>
           <div class="controls"><div class="chips" id="chips-dl">
             <button class="chip" data-dl="c411">Ajoutés via C411</button>
@@ -261,6 +292,7 @@ class C411Panel extends HTMLElement {
 
     root.addEventListener("click", (ev) => this._onClick(ev));
     root.getElementById("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); this._search(false); });
+    root.getElementById("series-q").addEventListener("input", (ev) => { this._s.seriesQuery = ev.target.value; this._renderSeries(); });
     for (const id of ["sort-latest", "sort-search"]) {
       root.getElementById(id).addEventListener("change", (ev) => {
         this._s.sort = ev.target.value;
@@ -271,17 +303,19 @@ class C411Panel extends HTMLElement {
     root.addEventListener("change", (ev) => {
       if (ev.target.classList.contains("qbcat")) { this._s.qbCategory = ev.target.value; this._renderSendOptions(); }
       if (ev.target.classList.contains("paused")) { this._s.paused = ev.target.checked; this._renderSendOptions(); }
+      if (ev.target.dataset.pref) this._seriesPref(ev.target.dataset.key, ev.target.dataset.pref, ev.target.checked);
     });
     this._renderChips(); this._renderSendOptions(); this._renderStats();
     this._renderLatest(); this._renderResults(); this._renderDownloads();
   }
 
   _onClick(ev) {
-    const el = ev.target.closest("[data-tab],[data-action],[data-cat],[data-dl]");
+    const el = ev.target.closest("[data-tab],[data-action],[data-cat],[data-dl],[data-sf]");
     if (!el) return;
     const s = this._s;
     if (el.dataset.tab) return this._setTab(el.dataset.tab);
     if (el.dataset.dl) { s.dlFilter = el.dataset.dl; this._renderDownloads(); return; }
+    if (el.dataset.sf) { s.seriesFilter = el.dataset.sf; this._renderSeries(); return; }
     if (el.dataset.cat !== undefined) {
       const set = el.dataset.scope === "latest" ? s.latestCats : s.cats;
       const c = el.dataset.cat;
@@ -301,6 +335,11 @@ class C411Panel extends HTMLElement {
       return;
     }
     if (a === "goto-downloads") return this._setTab("downloads");
+    if (a === "series-check") return this._seriesCall({ type: "c411/series_check" }, "Vérification terminée", "all");
+    if (a === "series-library") return this._seriesCall({ type: "c411/series_check", library: true }, "Bibliothèque Plex relue", "all");
+    if (a === "show-check") return this._seriesCall({ type: "c411/series_check", rating_key: el.dataset.key }, null, el.dataset.key);
+    if (a === "ep-grab") return this._seriesCall({ type: "c411/series_grab", rating_key: el.dataset.key, key: el.dataset.ep }, `${el.dataset.ep} envoyé à qBittorrent`, el.dataset.key + el.dataset.ep);
+    if (a === "ep-forget") return this._seriesCall({ type: "c411/series_forget", rating_key: el.dataset.key, code: el.dataset.ep }, `${el.dataset.ep} pourra être retéléchargé`, el.dataset.key + el.dataset.ep);
     if (a === "confirm") { s.confirm = el.dataset.hash; return this._renderDownloads(); }
     if (a === "cancel") { s.confirm = null; return this._renderDownloads(); }
     if (["pause", "resume", "delete", "delete_files", "recheck"].includes(a)) return this._action(a, el.dataset.hash);
@@ -310,7 +349,8 @@ class C411Panel extends HTMLElement {
     this._s.tab = tab;
     const root = this.shadowRoot;
     root.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-    for (const p of ["latest", "search", "downloads"]) root.getElementById(`pane-${p}`).hidden = p !== tab;
+    for (const p of ["latest", "search", "series", "downloads"]) root.getElementById(`pane-${p}`).hidden = p !== tab;
+    if (tab === "series") { this._renderSeries(); this._loadSeries(); }
     if (tab === "search") setTimeout(() => root.getElementById("q").focus(), 50);
     if (tab === "downloads") { this._renderDownloads(); this._loadTorrents(); }
   }
@@ -330,10 +370,11 @@ class C411Panel extends HTMLElement {
   _renderSendOptions() {
     const s = this._s;
     const cats = s.config?.qb_categories || [];
-    const opts = [`<option value="">Sans catégorie</option>`]
-      .concat(cats.map((c) => `<option value="${esc(c)}" ${c === s.qbCategory ? "selected" : ""}>${esc(c)}</option>`));
-    if (s.qbCategory && !cats.includes(s.qbCategory)) opts.push(`<option selected value="${esc(s.qbCategory)}">${esc(s.qbCategory)}</option>`);
-    const html = `<label title="Catégorie qBittorrent utilisée à l'envoi"><ha-icon icon="mdi:folder-download"></ha-icon>
+    const opts = [
+      `<option value="${AUTO}" ${s.qbCategory === AUTO ? "selected" : ""}>Automatique (selon le type)</option>`,
+      `<option value="" ${s.qbCategory === "" ? "selected" : ""}>Sans catégorie</option>`,
+    ].concat(cats.map((c) => `<option value="${esc(c)}" ${c === s.qbCategory ? "selected" : ""}>${esc(c)}</option>`));
+    const html = `<label title="Destination dans qBittorrent. « Automatique » utilise le dossier et la catégorie réglés pour chaque type (Films, Séries…) dans les options."><ha-icon icon="mdi:folder-download"></ha-icon>
         <select class="qbcat">${opts.join("")}</select></label>
       <label class="check" title="Ajouter en pause"><input type="checkbox" class="paused" ${s.paused ? "checked" : ""}/> en pause</label>`;
     this.shadowRoot.querySelectorAll(".send-options").forEach((el) => (el.innerHTML = html));
@@ -350,6 +391,8 @@ class C411Panel extends HTMLElement {
     }
     const n = qb ? qb.c411_downloading : 0;
     root.getElementById("dlcount").textContent = n ? String(n) : "";
+    const av = this._s.series?.available_count || 0;
+    root.getElementById("sercount").textContent = av ? String(av) : "";
   }
 
   _topCats() {
@@ -397,7 +440,8 @@ class C411Panel extends HTMLElement {
     }
     if (s.sending.has(rel.guid)) return `<button class="btn primary" disabled><span class="spin"></span>Envoi…</button>`;
     if (s.sent.has(rel.guid)) return `<button class="btn have" data-action="goto-downloads"><ha-icon icon="mdi:check"></ha-icon>Envoyé</button>`;
-    return `<button class="btn primary" data-action="download" data-list="${list}" data-guid="${esc(rel.guid)}">
+    const dest = this._destination(rel);
+    return `<button class="btn primary" data-action="download" data-list="${list}" data-guid="${esc(rel.guid)}" title="${esc(dest ? "Destination : " + dest : "Envoyer à qBittorrent")}">
       <ha-icon icon="mdi:download"></ha-icon>Télécharger</button>`;
   }
 
@@ -519,6 +563,133 @@ class C411Panel extends HTMLElement {
         <span title="Sources / clients"><ha-icon icon="mdi:account-multiple"></ha-icon>${t.num_seeds} / ${t.num_leechs}</span>
         <span title="Ratio"><ha-icon icon="mdi:scale-balance"></ha-icon>${nf1.format(t.ratio || 0)}</span>
         ${t.category ? `<span class="badge">${esc(t.category)}</span>` : ""}
+      </div>
+    </article>`;
+  }
+
+  _destination(rel) {
+    const s = this._s;
+    const f = (s.config?.folders || []).find((x) => x.type === rel.content_type);
+    const cat = s.qbCategory === AUTO ? (f?.category || "") : s.qbCategory;
+    const parts = [];
+    if (f) parts.push(f.label);
+    parts.push(f?.path || "dossier par défaut");
+    if (cat) parts.push(`catégorie ${cat}`);
+    return parts.join(" · ");
+  }
+
+  // ---------------------------------------------------------------- séries
+  async _loadSeries() {
+    if (!this._hass || !this._built) return;
+    const s = this._s;
+    s.seriesLoading = !s.series;
+    try { s.series = await this._ws({ type: "c411/series" }); s.seriesError = null; }
+    catch (e) { s.seriesError = this._msg(e); }
+    s.seriesLoading = false;
+    this._renderStats();
+    if (s.tab === "series") this._renderSeries();
+  }
+
+  async _seriesCall(msg, okText, busyKey) {
+    const s = this._s;
+    if (s.seriesBusy.has(busyKey)) return;
+    s.seriesBusy.add(busyKey); this._renderSeries();
+    try {
+      s.series = await this._ws(msg);
+      if (okText) this._toast(okText);
+      else if (msg.rating_key) {
+        const show = s.series.shows.find((x) => x.rating_key === msg.rating_key);
+        this._toast(show?.available.length ? `${show.available.length} épisode(s) trouvé(s) pour ${show.title}` : `Rien de nouveau pour ${show?.title || "cette série"}`);
+      }
+      if (msg.type === "c411/series_grab") setTimeout(() => this._loadTorrents(), 1500);
+    } catch (e) { this._toast(this._msg(e), true); }
+    s.seriesBusy.delete(busyKey);
+    this._renderSeries(); this._renderStats();
+  }
+
+  async _seriesPref(key, pref, value) {
+    try {
+      this._s.series = await this._ws({ type: "c411/series_update", rating_key: key, [pref]: value });
+    } catch (e) { this._toast(this._msg(e), true); }
+    this._renderSeries(); this._renderStats();
+  }
+
+  _renderSeries() {
+    const root = this.shadowRoot; const el = root.getElementById("list-series"); if (!el) return;
+    const s = this._s;
+    root.querySelectorAll("#chips-series .chip").forEach((c) => c.classList.toggle("on", c.dataset.sf === s.seriesFilter));
+    const busyAll = s.seriesBusy.has("all");
+    root.querySelectorAll('[data-action="series-check"],[data-action="series-library"]').forEach((b) => (b.disabled = busyAll));
+    const status = root.getElementById("series-status");
+    if (s.seriesError) { el.innerHTML = `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.seriesError)}</div>`; return; }
+    if (!s.series) { el.innerHTML = skeleton(); status.textContent = ""; return; }
+    if (!s.series.configured) {
+      status.textContent = "";
+      el.innerHTML = empty("mdi:plex", `Plex n'est pas encore connecté.<br><small>Paramètres → Appareils et services → C411 → Configurer → <b>Connexion Plex</b>,
+        puis <b>Suivi des séries</b> pour régler qualité, langues et téléchargement automatique.</small>`);
+      return;
+    }
+    const d = s.series;
+    const bits = [];
+    if (d.server_name) bits.push(`<ha-icon icon="mdi:plex"></ha-icon> ${esc(d.server_name)}`);
+    bits.push(`${d.followed} série${d.followed > 1 ? "s" : ""} suivie${d.followed > 1 ? "s" : ""} sur ${d.shows.length}`);
+    bits.push(d.auto ? `<span class="ok">téléchargement automatique activé</span>` : `<span class="warn">téléchargement automatique désactivé</span>`);
+    if (d.last_check) bits.push(`dernière vérification ${esc(ago(d.last_check))}`);
+    if (busyAll) bits.push(`<span class="spin"></span> en cours…`);
+    status.innerHTML = bits.join(" · ") +
+      (d.last_check_error ? `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>C411 : ${esc(d.last_check_error)}</div>` : "") +
+      (d.library_error ? `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>Plex : ${esc(d.library_error)}</div>` : "");
+
+    const q = s.seriesQuery.trim().toLowerCase();
+    let shows = d.shows;
+    if (s.seriesFilter === "followed") shows = shows.filter((x) => x.follow);
+    if (s.seriesFilter === "available") shows = shows.filter((x) => x.available.length);
+    if (q) shows = shows.filter((x) => x.title.toLowerCase().includes(q));
+    if (!shows.length) {
+      el.innerHTML = empty("mdi:television-off", s.seriesFilter === "available" ? "Aucun nouvel épisode trouvé pour l'instant." : "Aucune série.");
+      return;
+    }
+    el.innerHTML = shows.map((x) => this._showHtml(x, d.poster_secret)).join("");
+  }
+
+  _showHtml(x, secret) {
+    const s = this._s;
+    const k = esc(x.rating_key);
+    const statusPill = {
+      available: `<span class="pill2 new"><ha-icon icon="mdi:new-box"></ha-icon>${x.available.length} disponible${x.available.length > 1 ? "s" : ""}</span>`,
+      grabbed: `<span class="pill2 dl"><ha-icon icon="mdi:progress-download"></ha-icon>En téléchargement</span>`,
+      up_to_date: `<span class="pill2 ok"><ha-icon icon="mdi:check-circle-outline"></ha-icon>À jour</span>`,
+    }[x.status];
+    const poster = x.has_poster
+      ? `<img loading="lazy" src="/api/c411/plex/poster/${encodeURIComponent(x.rating_key)}?s=${encodeURIComponent(secret)}" alt="">`
+      : `<div class="noposter"><ha-icon icon="mdi:television-classic"></ha-icon></div>`;
+    const avail = x.available.map((a) => {
+      const busy = s.seriesBusy.has(x.rating_key + a.key);
+      return `<li><b>${esc(a.key)}</b>
+        <span class="tags"><span class="tag">${esc(a.quality)}</span><span class="tag">${esc({ vf: "VF", vostfr: "VOSTFR", vo: "VO" }[a.languages] || a.languages)}</span></span>
+        <span class="muted" title="${esc(a.title)}">${bytes(a.size)} · ${a.seeders} src</span>
+        <button class="btn primary xs" data-action="ep-grab" data-key="${k}" data-ep="${esc(a.key)}" title="${esc(a.title)}" ${busy ? "disabled" : ""}>
+          ${busy ? '<span class="spin"></span>' : '<ha-icon icon="mdi:download"></ha-icon>'}</button></li>`;
+    }).join("");
+    const grabbed = x.grabbed.map((g) => `<li><b>${esc(g.code)}</b>
+        <span class="muted" title="${esc(g.title)}">envoyé ${esc(ago(g.at))}${g.auto ? " · auto" : ""}</span>
+        <button class="ghost sm" data-action="ep-forget" data-key="${k}" data-ep="${esc(g.code)}" title="Oublier (permet de le retélécharger)"><ha-icon icon="mdi:backup-restore"></ha-icon></button></li>`).join("");
+    const checking = s.seriesBusy.has(x.rating_key);
+    return `<article class="card show ${x.follow ? "" : "off"}">
+      <div class="poster">${poster}</div>
+      <div class="sbody">
+        <div class="t">${esc(x.title)}${x.year ? ` <span class="muted">(${x.year})</span>` : ""}</div>
+        <div class="meta"><span>${x.last ? `Dernier : <b>${esc(x.last)}</b>` : "Aucun épisode"}</span>
+          <span>${x.episode_count} ép. · ${x.season_count} saison${x.season_count > 1 ? "s" : ""}</span></div>
+        <div class="row tight">${x.follow ? statusPill : `<span class="pill2">Non suivie</span>`}</div>
+        <div class="switches">
+          <label class="sw"><input type="checkbox" data-pref="follow" data-key="${k}" ${x.follow ? "checked" : ""}><span></span>Suivre</label>
+          <label class="sw ${x.follow ? "" : "dis"}" title="Télécharger automatiquement les nouveaux épisodes"><input type="checkbox" data-pref="auto" data-key="${k}" ${x.auto ? "checked" : ""} ${x.follow ? "" : "disabled"}><span></span>Auto</label>
+          <button class="ghost sm" data-action="show-check" data-key="${k}" title="Chercher sur C411 maintenant" ${checking ? "disabled" : ""}>
+            ${checking ? '<span class="spin"></span>' : '<ha-icon icon="mdi:magnify"></ha-icon>'}</button>
+        </div>
+        ${avail ? `<ul class="eps">${avail}</ul>` : ""}
+        ${grabbed ? `<ul class="eps grabbed">${grabbed}</ul>` : ""}
       </div>
     </article>`;
   }
@@ -658,6 +829,50 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
   border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); font-size: 14px; }
 .toast.err { background: var(--c-err); color: #fff; }
 [hidden] { display: none !important; }
+.grow { flex: 1; }
+.filter { min-width: 140px; border-radius: 999px; padding: 6px 12px; }
+.btn.outline { border: 1px solid var(--c-div); color: var(--primary-text-color); }
+.btn.outline:hover { border-color: var(--c-accent); }
+.btn.xs { padding: 4px 10px; min-width: 0; font-size: 12px; }
+.btn.xs ha-icon { --mdc-icon-size: 16px; }
+.hint .ok { color: var(--c-ok); } .hint .warn { color: var(--c-warn); }
+.hint ha-icon { --mdc-icon-size: 14px; vertical-align: -2px; }
+.hint .notice { margin-top: 6px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 10px; }
+.show { display: flex; gap: 12px; padding: 10px; align-items: flex-start; }
+.show.off { opacity: .6; }
+.show .poster { flex: none; width: 92px; aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; background: var(--secondary-background-color, rgba(0,0,0,.06)); }
+.show .poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.noposter { width: 100%; height: 100%; display: grid; place-items: center; color: var(--c-sub); }
+.noposter ha-icon { --mdc-icon-size: 32px; }
+.sbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.sbody .meta { margin-top: 0; }
+.muted { color: var(--c-sub); font-weight: 400; }
+.row.tight { gap: 6px; }
+.pill2 { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  background: var(--secondary-background-color, rgba(0,0,0,.06)); color: var(--c-sub); }
+.pill2 ha-icon { --mdc-icon-size: 14px; }
+.pill2.new { background: color-mix(in srgb, var(--c-accent) 16%, transparent); color: var(--c-accent); }
+.pill2.dl { background: color-mix(in srgb, var(--c-warn) 18%, transparent); color: var(--c-warn); }
+.pill2.ok { background: color-mix(in srgb, var(--c-ok) 15%, transparent); color: var(--c-ok); }
+.switches { display: flex; align-items: center; gap: 14px; font-size: 13px; }
+.sw { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.sw.dis { opacity: .5; cursor: default; }
+.sw input { display: none; }
+.sw span { width: 30px; height: 16px; border-radius: 999px; background: var(--c-div); position: relative; transition: .2s; }
+.sw span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: .2s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.sw input:checked + span { background: var(--c-accent); }
+.sw input:checked + span::after { left: 16px; }
+.switches .ghost { margin-left: auto; width: 30px; height: 30px; }
+.ghost.sm { width: 28px; height: 28px; } .ghost.sm ha-icon { --mdc-icon-size: 17px; }
+.eps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.eps li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 6px 4px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--c-accent) 7%, transparent); }
+.eps.grabbed li { background: var(--secondary-background-color, rgba(0,0,0,.05)); }
+.eps li .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tags { display: inline-flex; gap: 4px; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--c-div); color: var(--c-sub); }
+button[disabled] { opacity: .6; cursor: default; }
 @media (max-width: 640px) {
   .rel { flex-wrap: wrap; }
   .rel .act { width: 100%; justify-content: flex-end; }
@@ -666,6 +881,11 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
   .tabs button { flex: 1; justify-content: center; }
   .send-options { margin-left: 0; }
   .stats .pill:nth-child(2) { display: none; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .grow { display: none; }
+  .show .poster { width: 64px; }
+  .eps li .tags { display: none; }
+  .filter { flex: 1; min-width: 0; }
 }
 `;
 

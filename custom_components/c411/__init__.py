@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from http import HTTPStatus
 import logging
 from pathlib import Path
 import re
@@ -11,7 +13,9 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant.components import frontend, panel_custom
-from homeassistant.components.http import StaticPathConfig
+from aiohttp import web
+
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import (
@@ -22,19 +26,20 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.http import KEY_HASS
 from homeassistant.helpers.aiohttp_client import (
     async_create_clientsession,
     async_get_clientsession,
 )
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.typing import ConfigType
 
 from .api import C411Client, C411Error, QBittorrentClient, QBittorrentError
 from .const import (
     CONF_API_KEY,
     CONF_C411_URL,
-    CONF_QB_CATEGORY,
+    CONTENT_TYPES,
     CONF_QB_PASSWORD,
-    CONF_QB_SAVE_PATH,
     CONF_QB_TAG,
     CONF_QB_URL,
     CONF_QB_USERNAME,
@@ -48,6 +53,19 @@ from .const import (
     PANEL_URL_PATH,
     STATIC_URL,
 )
+from .const import (
+    CONF_PLEX_REFRESH_ON_COMPLETE,
+    CONF_PLEX_TOKEN,
+    CONF_PLEX_URL,
+    CONF_PLEX_VERIFY_SSL,
+    CONF_SERIES_ENABLED,
+    CONF_SERIES_INTERVAL,
+    DEFAULT_SERIES_INTERVAL,
+    EVENT_DOWNLOAD_COMPLETED,
+)
+from .content import content_type, resolve_destination
+from .plex import PlexClient
+from .series import SeriesCoordinator
 from .coordinator import C411FeedCoordinator, C411RuntimeData, QBittorrentCoordinator
 from .websocket import async_register_websocket
 
@@ -64,6 +82,7 @@ PANEL_FILE = "c411-panel.js"
 SERVICE_SEARCH = "search"
 SERVICE_DOWNLOAD = "download"
 SERVICE_REFRESH = "refresh"
+SERVICE_CHECK_SERIES = "check_series"
 
 SEARCH_SCHEMA = vol.Schema(
     {
@@ -79,6 +98,8 @@ DOWNLOAD_SCHEMA = vol.Schema(
         vol.Optional("save_path"): cv.string,
         vol.Optional("paused"): cv.boolean,
         vol.Optional("title"): cv.string,
+        vol.Optional("categories"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("type"): vol.In(list(CONTENT_TYPES)),
     }
 )
 
@@ -109,17 +130,24 @@ async def async_send_to_qbittorrent(
     url: str,
     *,
     title: str | None = None,
+    categories: list[str] | None = None,
+    ctype: str | None = None,
     category: str | None = None,
     save_path: str | None = None,
     paused: bool | None = None,
 ) -> dict[str, Any]:
-    """Récupère le .torrent sur C411 puis l'envoie à qBittorrent."""
+    """Récupère le .torrent sur C411 puis l'envoie à qBittorrent.
+
+    Le dossier et la catégorie dépendent du type de contenu (films, séries…),
+    sauf si `category` / `save_path` sont donnés explicitement.
+    """
     entry = get_entry(hass)
     rt = entry.runtime_data
-    opts = entry.options
+    opts = dict(entry.options)
 
-    category = category if category is not None else opts.get(CONF_QB_CATEGORY) or None
-    save_path = save_path if save_path is not None else opts.get(CONF_QB_SAVE_PATH) or None
+    if ctype not in CONTENT_TYPES:
+        ctype = content_type(categories)
+    category, save_path = resolve_destination(opts, ctype, category=category, save_path=save_path)
     paused = paused if paused is not None else bool(opts.get(CONF_START_PAUSED, False))
     tag = opts.get(CONF_QB_TAG, DEFAULT_QB_TAG)
 
@@ -140,7 +168,10 @@ async def async_send_to_qbittorrent(
     except QBittorrentError as err:
         raise HomeAssistantError(str(err)) from err
 
-    event = {"title": title, "url": url, "category": category, "paused": paused}
+    event = {
+        "title": title, "url": url, "type": ctype, "category": category,
+        "save_path": save_path, "paused": paused,
+    }
     hass.bus.async_fire(EVENT_DOWNLOAD_ADDED, event)
     await rt.downloads.async_request_refresh()
     return event
@@ -167,6 +198,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await async_send_to_qbittorrent(
             hass, url,
             title=call.data.get("title"),
+            categories=call.data.get("categories"),
+            ctype=call.data.get("type"),
             category=call.data.get("category"),
             save_path=call.data.get("save_path"),
             paused=call.data.get("paused"),
@@ -176,6 +209,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         rt = get_runtime(hass)
         await rt.feed.async_request_refresh()
         await rt.downloads.async_request_refresh()
+        if rt.series is not None:
+            await rt.series.async_request_refresh()
 
     hass.services.async_register(
         DOMAIN, SERVICE_SEARCH, handle_search, schema=SEARCH_SCHEMA,
@@ -183,6 +218,22 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
     hass.services.async_register(DOMAIN, SERVICE_DOWNLOAD, handle_download, schema=DOWNLOAD_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, handle_refresh)
+
+    async def handle_check_series(call: ServiceCall) -> ServiceResponse:
+        rt = get_runtime(hass)
+        if rt.series is None:
+            raise ServiceValidationError("Plex n'est pas configuré (options de l'intégration)")
+        payload = await rt.series.async_check()
+        return {
+            "available_count": payload["available_count"],
+            "available": [
+                {"show": s["title"], **a} for s in payload["shows"] if s["follow"] for a in s["available"]
+            ],
+        }
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_CHECK_SERIES, handle_check_series, supports_response=SupportsResponse.OPTIONAL
+    )
     async_register_websocket(hass)
     return True
 
@@ -211,10 +262,82 @@ async def async_setup_entry(hass: HomeAssistant, entry: C411ConfigEntry) -> bool
     await feed.async_config_entry_first_refresh()
 
     entry.runtime_data = C411RuntimeData(c411=c411, qbit=qbit, feed=feed, downloads=downloads)
+    await _async_setup_series(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await _async_register_panel(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
+
+
+async def _async_setup_series(hass: HomeAssistant, entry: C411ConfigEntry) -> None:
+    """Plex + suivi des séries (facultatif)."""
+    opts = entry.options
+    if not (opts.get(CONF_PLEX_URL) and opts.get(CONF_PLEX_TOKEN)):
+        return
+    plex = PlexClient(
+        async_create_clientsession(hass, verify_ssl=opts.get(CONF_PLEX_VERIFY_SSL, True)),
+        opts[CONF_PLEX_URL],
+        opts[CONF_PLEX_TOKEN],
+    )
+    series = SeriesCoordinator(hass, entry, plex, entry.runtime_data.c411)
+    await series.async_load()
+    # Plex injoignable ne doit pas empêcher le reste de fonctionner
+    await series.async_refresh()
+    entry.runtime_data.series = series
+    entry.async_on_unload(series.async_flush)
+
+    if not hass.data.get(f"{DOMAIN}_poster_view"):
+        hass.http.register_view(PlexPosterView())
+        hass.data[f"{DOMAIN}_poster_view"] = True
+
+    if opts.get(CONF_SERIES_ENABLED, True):
+        minutes = max(10, int(opts.get(CONF_SERIES_INTERVAL, DEFAULT_SERIES_INTERVAL)))
+
+        async def _periodic(_now=None) -> None:
+            await series.async_check()
+
+        entry.async_on_unload(
+            async_track_time_interval(hass, _periodic, timedelta(minutes=minutes))
+        )
+        # première vérification un peu après le démarrage
+        entry.async_on_unload(async_call_later(hass, 60, _periodic))
+
+    if opts.get(CONF_PLEX_REFRESH_ON_COMPLETE, True):
+
+        async def _on_complete(event) -> None:
+            if not event.data.get("from_c411"):
+                return
+            await series.async_refresh_plex_for(event.data.get("name") or "")
+            # Plex met un moment à indexer : on relit la bibliothèque ensuite
+            async def _reload_library(_now) -> None:
+                await series.async_refresh()
+
+            async_call_later(hass, 120, _reload_library)
+
+        entry.async_on_unload(hass.bus.async_listen(EVENT_DOWNLOAD_COMPLETED, _on_complete))
+
+
+class PlexPosterView(HomeAssistantView):
+    """Affiches des séries, servies via Home Assistant (le jeton Plex reste côté serveur)."""
+
+    url = "/api/c411/plex/poster/{rating_key}"
+    name = "api:c411:plex_poster"
+    requires_auth = False  # les balises <img> ne peuvent pas envoyer le jeton HA
+
+    async def get(self, request: web.Request, rating_key: str) -> web.StreamResponse:
+        hass = request.app[KEY_HASS]
+        try:
+            series = get_runtime(hass).series
+        except HomeAssistantError:
+            series = None
+        if series is None or request.query.get("s") != series.poster_secret:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        poster = await series.async_poster(rating_key)
+        if poster is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        body, ctype = poster
+        return web.Response(body=body, content_type=ctype.split(";")[0],
+                            headers={"Cache-Control": "private, max-age=86400"})
 
 
 async def _async_reload(hass: HomeAssistant, entry: C411ConfigEntry) -> None:

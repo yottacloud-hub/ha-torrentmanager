@@ -4,7 +4,10 @@
       "user": {
         "title": "Connexion à C411",
         "description": "Générez une clé API sur la page « Intégrations API » de votre compte C411 ({integrations_url}).",
-        "data": { "c411_url": "Adresse du site", "api_key": "Clé API C411" }
+        "data": {
+          "c411_url": "Adresse du site",
+          "api_key": "Clé API C411"
+        }
       },
       "qbittorrent": {
         "title": "Serveur qBittorrent",
@@ -19,7 +22,11 @@
       "reauth_confirm": {
         "title": "Identifiants à mettre à jour",
         "description": "C411 ou qBittorrent refuse les identifiants enregistrés.",
-        "data": { "api_key": "Clé API C411", "qb_username": "Utilisateur qBittorrent", "qb_password": "Mot de passe qBittorrent" }
+        "data": {
+          "api_key": "Clé API C411",
+          "qb_username": "Utilisateur qBittorrent",
+          "qb_password": "Mot de passe qBittorrent"
+        }
       },
       "reconfigure": {
         "title": "Modifier qBittorrent",
@@ -48,28 +55,116 @@
     "step": {
       "init": {
         "title": "Options C411",
+        "menu_options": {
+          "general": "Général (nouveautés, qBittorrent)",
+          "folders": "Dossiers et catégories par type",
+          "plex": "Connexion Plex",
+          "series": "Suivi des séries"
+        }
+      },
+      "general": {
+        "title": "Général",
         "data": {
           "feed_categories": "Catégories suivies pour les nouveautés (vide = toutes)",
           "feed_limit": "Nombre de nouveautés récupérées",
           "feed_interval": "Fréquence de rafraîchissement des nouveautés",
-          "qb_category": "Catégorie qBittorrent par défaut",
-          "qb_save_path": "Dossier de destination (vide = défaut de qBittorrent)",
+          "qb_category": "Catégorie qBittorrent par défaut (si rien n'est défini pour le type)",
+          "qb_save_path": "Dossier par défaut (si rien n'est défini pour le type)",
           "qb_tag": "Étiquette ajoutée aux torrents C411",
           "start_paused": "Ajouter les torrents en pause",
           "qb_interval": "Fréquence de suivi de qBittorrent"
         }
+      },
+      "folders": {
+        "title": "Dossiers par type",
+        "description": "Où qBittorrent doit ranger chaque type de contenu, ex. `/data/films`, `/data/series`. Le chemin est celui vu par qBittorrent. Laissez vide pour utiliser le dossier par défaut.",
+        "data": {
+          "path_movies": "Films — dossier",
+          "cat_movies": "Films — catégorie qBittorrent",
+          "path_series": "Séries — dossier",
+          "cat_series": "Séries — catégorie qBittorrent",
+          "path_anime": "Animation (séries) — dossier",
+          "cat_anime": "Animation (séries) — catégorie qBittorrent",
+          "path_music": "Musique & audio — dossier",
+          "cat_music": "Musique & audio — catégorie qBittorrent",
+          "path_books": "Livres, BD & presse — dossier",
+          "cat_books": "Livres, BD & presse — catégorie qBittorrent",
+          "path_games": "Jeux — dossier",
+          "cat_games": "Jeux — catégorie qBittorrent",
+          "path_software": "Logiciels — dossier",
+          "cat_software": "Logiciels — catégorie qBittorrent",
+          "path_other": "Autre — dossier",
+          "cat_other": "Autre — catégorie qBittorrent"
+        }
+      },
+      "plex": {
+        "title": "Connexion Plex",
+        "description": "Adresse du serveur, ex. `http://192.168.1.20:32400`. Pour trouver le jeton : dans Plex Web, ouvrez un épisode → ⋯ → « Obtenir des infos » → « Afficher le XML » ; le jeton est la valeur `X-Plex-Token` dans l'adresse. Videz l'adresse pour déconnecter Plex.",
+        "data": {
+          "plex_url": "Adresse du serveur Plex",
+          "plex_token": "Jeton Plex (X-Plex-Token)",
+          "plex_verify_ssl": "Vérifier le certificat SSL",
+          "plex_refresh_on_complete": "Rescanner Plex quand un téléchargement C411 se termine"
+        }
+      },
+      "series": {
+        "title": "Suivi des séries",
+        "description": "Pour chaque série de Plex, l'intégration cherche sur C411 les épisodes qui suivent le dernier épisode présent dans Plex.",
+        "data": {
+          "series_enabled": "Activer le suivi des séries",
+          "series_auto": "Télécharger automatiquement les nouveaux épisodes",
+          "series_follow_new": "Suivre automatiquement les séries ajoutées dans Plex",
+          "plex_sections": "Bibliothèques Plex à suivre (vide = toutes)",
+          "series_quality": "Qualité préférée",
+          "series_qualities": "Qualités acceptées",
+          "series_languages": "Langues acceptées (par ordre de préférence)",
+          "series_min_seeders": "Nombre minimum de sources",
+          "series_exclude": "Mots exclus (séparés par des virgules)",
+          "series_packs": "Accepter les packs de saison complète (saisons absentes de Plex)",
+          "series_max_grabs": "Téléchargements automatiques max. par vérification",
+          "series_interval": "Fréquence de vérification sur C411",
+          "plex_interval": "Fréquence de relecture de la bibliothèque Plex",
+          "series_notify": "Notification Home Assistant à chaque épisode envoyé"
+        }
       }
+    },
+    "error": {
+      "invalid_plex_token": "Jeton Plex refusé.",
+      "cannot_connect_plex": "Impossible de joindre le serveur Plex."
+    },
+    "abort": {
+      "plex_required": "Configurez d'abord la connexion Plex."
     }
   },
   "entity": {
     "sensor": {
-      "latest_release": { "name": "Dernière nouveauté" },
-      "download_speed": { "name": "Vitesse de téléchargement" },
-      "upload_speed": { "name": "Vitesse d'envoi" },
-      "active_downloads": { "name": "Téléchargements actifs" },
-      "c411_downloads": { "name": "Téléchargements C411 actifs" },
-      "total_torrents": { "name": "Torrents" },
-      "c411_progress": { "name": "Torrents C411" }
+      "latest_release": {
+        "name": "Dernière nouveauté"
+      },
+      "download_speed": {
+        "name": "Vitesse de téléchargement"
+      },
+      "upload_speed": {
+        "name": "Vitesse d'envoi"
+      },
+      "active_downloads": {
+        "name": "Téléchargements actifs"
+      },
+      "c411_downloads": {
+        "name": "Téléchargements C411 actifs"
+      },
+      "total_torrents": {
+        "name": "Torrents"
+      },
+      "c411_progress": {
+        "name": "Torrents C411"
+      },
+      "followed_shows": {
+        "name": "Séries suivies"
+      },
+      "available_episodes": {
+        "name": "Nouveaux épisodes disponibles"
+      }
     }
   },
   "services": {
@@ -77,25 +172,61 @@
       "name": "Rechercher sur C411",
       "description": "Recherche des releases sur C411 et renvoie les résultats.",
       "fields": {
-        "query": { "name": "Recherche", "description": "Texte recherché (vide = derniers ajouts)." },
-        "categories": { "name": "Catégories", "description": "Identifiants de catégories Torznab." },
-        "limit": { "name": "Nombre de résultats", "description": "Entre 1 et 100." }
+        "query": {
+          "name": "Recherche",
+          "description": "Texte recherché (vide = derniers ajouts)."
+        },
+        "categories": {
+          "name": "Catégories",
+          "description": "Identifiants de catégories Torznab."
+        },
+        "limit": {
+          "name": "Nombre de résultats",
+          "description": "Entre 1 et 100."
+        }
       }
     },
     "download": {
       "name": "Télécharger avec qBittorrent",
       "description": "Récupère le .torrent sur C411 et l'envoie à qBittorrent.",
       "fields": {
-        "url": { "name": "Lien de téléchargement", "description": "download_url renvoyé par la recherche." },
-        "title": { "name": "Titre", "description": "Utilisé pour le nom du fichier et l'événement." },
-        "category": { "name": "Catégorie qBittorrent", "description": "Remplace la catégorie par défaut." },
-        "save_path": { "name": "Dossier", "description": "Remplace le dossier par défaut." },
-        "paused": { "name": "En pause", "description": "Ajoute le torrent en pause." }
+        "url": {
+          "name": "Lien de téléchargement",
+          "description": "download_url renvoyé par la recherche."
+        },
+        "title": {
+          "name": "Titre",
+          "description": "Utilisé pour le nom du fichier et l'événement."
+        },
+        "category": {
+          "name": "Catégorie qBittorrent",
+          "description": "Remplace la catégorie du type."
+        },
+        "save_path": {
+          "name": "Dossier",
+          "description": "Remplace le dossier du type."
+        },
+        "paused": {
+          "name": "En pause",
+          "description": "Ajoute le torrent en pause."
+        },
+        "categories": {
+          "name": "Catégories C411",
+          "description": "Servent à déterminer le type (dossier)."
+        },
+        "type": {
+          "name": "Type de contenu",
+          "description": "movies, series, anime, music, books, games, software, other"
+        }
       }
     },
     "refresh": {
       "name": "Rafraîchir",
       "description": "Rafraîchit les nouveautés C411 et l'état de qBittorrent."
+    },
+    "check_series": {
+      "name": "Vérifier les séries",
+      "description": "Cherche sur C411 les nouveaux épisodes des séries Plex suivies (et les télécharge si l'automatique est activé)."
     }
   }
 }

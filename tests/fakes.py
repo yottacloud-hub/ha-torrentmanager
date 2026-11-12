@@ -7,41 +7,39 @@ from aiohttp import web
 API_KEY = "secret-key"
 TORRENT = b"d8:announce30:https://tracker.c411.org/announce4:infod4:name4:test6:lengthi1ee"
 
-TORZNAB = """<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
-<channel><title>C411</title>
-<item>
-  <title>Dune.Part.Two.2024.MULTi.2160p.WEB-DL.DV.HDR.H265-GRP</title>
-  <guid>https://c411.org/torrents/1001</guid>
-  <link>{base}/api/torznab?t=get&amp;id=1001</link>
-  <comments>https://c411.org/torrents/1001</comments>
-  <pubDate>Wed, 11 Nov 2026 20:15:00 +0000</pubDate>
-  <size>21474836480</size>
-  <enclosure url="{base}/api/torznab?t=get&amp;id=1001" length="21474836480" type="application/x-bittorrent"/>
-  <torznab:attr name="category" value="2000"/>
-  <torznab:attr name="category" value="2030"/>
-  <torznab:attr name="seeders" value="154"/>
-  <torznab:attr name="peers" value="12"/>
-  <torznab:attr name="grabs" value="890"/>
-  <torznab:attr name="infohash" value="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"/>
-  <torznab:attr name="imdbid" value="tt15239678"/>
-  <torznab:attr name="downloadvolumefactor" value="0"/>
-</item>
-<item>
-  <title>Shogun.S02E03.FRENCH.1080p.WEB.H264-GRP</title>
-  <guid>https://c411.org/torrents/1002</guid>
-  <comments>https://c411.org/torrents/1002</comments>
-  <pubDate>Thu, 12 Nov 2026 08:00:00 +0000</pubDate>
-  <size>2147483648</size>
-  <enclosure url="{base}/api/torznab?t=get&amp;id=1002" length="2147483648" type="application/x-bittorrent"/>
-  <torznab:attr name="category" value="5000"/>
-  <torznab:attr name="seeders" value="40"/>
-  <torznab:attr name="peers" value="3"/>
-  <torznab:attr name="grabs" value="120"/>
-  <torznab:attr name="infohash" value="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
-  <torznab:attr name="downloadvolumefactor" value="1"/>
-</item>
-</channel></rss>"""
+ITEMS = [
+    {"id": "1001", "title": "Dune.Part.Two.2024.MULTi.2160p.WEB-DL.DV.HDR.H265-GRP", "date": "Wed, 11 Nov 2026 20:15:00 +0000",
+     "size": 21474836480, "cats": ["2000", "2030"], "seeders": 154, "peers": 12, "grabs": 890,
+     "infohash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "imdbid": "tt15239678", "free": True},
+    {"id": "1002", "title": "Shogun.S02E03.FRENCH.1080p.WEB.H264-GRP", "date": "Thu, 12 Nov 2026 08:00:00 +0000",
+     "size": 2147483648, "cats": ["5000"], "seeders": 40, "peers": 3, "grabs": 120,
+     "infohash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+]
+
+
+def render(items, base):
+    out = []
+    for it in items:
+        attrs = "".join(f'<torznab:attr name="category" value="{c}"/>' for c in it["cats"])
+        for k in ("seeders", "peers", "grabs", "infohash", "imdbid", "tmdbid"):
+            if k in it:
+                attrs += f'<torznab:attr name="{k}" value="{it[k]}"/>'
+        attrs += f'<torznab:attr name="downloadvolumefactor" value="{0 if it.get("free") else 1}"/>'
+        out.append(f"""<item><title>{it["title"]}</title><guid>https://c411.org/torrents/{it["id"]}</guid>
+  <comments>https://c411.org/torrents/{it["id"]}</comments><pubDate>{it.get("date", "Thu, 12 Nov 2026 09:00:00 +0000")}</pubDate>
+  <size>{it["size"]}</size><enclosure url="{base}/api/torznab?t=get&amp;id={it["id"]}" length="{it["size"]}" type="application/x-bittorrent"/>
+  {attrs}</item>""")
+    return ('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">'
+            f"<channel><title>C411</title>{''.join(out)}</channel></rss>")
+
+
+def _matches(it, q, cats):
+    title = it["title"].lower().replace(".", " ")
+    if q and not all(w in title for w in q.lower().split()):
+        return False
+    if cats and not any(c == w or (w.endswith("000") and c[0] == w[0]) for c in it["cats"] for w in cats):
+        return False
+    return True
 
 
 def make_c411_app(state: dict) -> web.Application:
@@ -58,7 +56,11 @@ def make_c411_app(state: dict) -> web.Application:
             if request.query.get("id") == "magnet":
                 raise web.HTTPFound("magnet:?xt=urn:btih:cccc")
             return web.Response(body=TORRENT, content_type="application/x-bittorrent")
-        return web.Response(text=TORZNAB.format(base=state["base"]), content_type="application/rss+xml")
+        items = state.get("items", ITEMS)
+        q = request.query.get("q", "")
+        cats = [c for c in request.query.get("cat", "").split(",") if c]
+        found = [it for it in items if _matches(it, q, cats)]
+        return web.Response(text=render(found, state["base"]), content_type="application/rss+xml")
 
     app = web.Application()
     app.router.add_get("/api/torznab", torznab)
@@ -139,4 +141,66 @@ def make_qbit_app(state: dict, *, v5: bool = True) -> web.Application:
     app.router.add_post("/api/v2/torrents/delete", guard(action("delete")))
     for name in (("start", "stop") if v5 else ("resume", "pause")):
         app.router.add_post(f"/api/v2/torrents/{name}", guard(action(name)))
+    return app
+
+
+PLEX_TOKEN = "plex-token"
+PNG = b"\x89PNG\r\n\x1a\nfake"
+
+
+def make_plex_app(state: dict) -> web.Application:
+    """Faux Plex : une bibliothèque de séries et une de films."""
+    state.setdefault("plex_shows", {
+        "100": {"title": "Shōgun", "year": 2024, "guids": ["tmdb://126308", "imdb://tt2788316"],
+                "owned": [(1, e) for e in range(1, 11)] + [(2, 1), (2, 2)]},
+        "101": {"title": "Le Bureau des Légendes", "year": 2015, "guids": ["tmdb://62852"],
+                "owned": [(s, e) for s in range(1, 6) for e in range(1, 11)]},
+        "102": {"title": "Severance", "year": 2022, "guids": ["tmdb://95396"],
+                "owned": [(s, e) for s in (1, 2) for e in range(1, 10)] + [(0, 1)]},
+    })
+    state.setdefault("plex_refreshed", [])
+
+    @web.middleware
+    async def auth(request, handler):
+        if request.headers.get("X-Plex-Token") != PLEX_TOKEN:
+            return web.Response(status=401)
+        return await handler(request)
+
+    def mc(**kw):
+        return web.json_response({"MediaContainer": kw})
+
+    async def root(request):
+        return mc(friendlyName="Serveur Maison")
+
+    async def sections(request):
+        return mc(Directory=[{"key": "1", "type": "show", "title": "Séries"},
+                             {"key": "2", "type": "movie", "title": "Films"}])
+
+    async def all_(request):
+        if request.match_info["key"] != "1":
+            return mc(Metadata=[])
+        return mc(Metadata=[
+            {"ratingKey": k, "title": v["title"], "year": v["year"], "thumb": f"/library/metadata/{k}/thumb/1",
+             "leafCount": len(v["owned"]), "Guid": [{"id": g} for g in v["guids"]]}
+            for k, v in state["plex_shows"].items()
+        ])
+
+    async def leaves(request):
+        show = state["plex_shows"][request.match_info["key"]]
+        return mc(Metadata=[{"parentIndex": s, "index": e} for s, e in show["owned"]])
+
+    async def refresh(request):
+        state["plex_refreshed"].append(request.match_info["key"])
+        return web.Response(text="")
+
+    async def transcode(request):
+        return web.Response(body=PNG, content_type="image/png")
+
+    app = web.Application(middlewares=[auth])
+    app.router.add_get("/", root)
+    app.router.add_get("/library/sections", sections)
+    app.router.add_get("/library/sections/{key}/all", all_)
+    app.router.add_get("/library/sections/{key}/refresh", refresh)
+    app.router.add_get("/library/metadata/{key}/allLeaves", leaves)
+    app.router.add_get("/photo/:/transcode", transcode)
     return app

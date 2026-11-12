@@ -89,3 +89,55 @@ TOP_CATEGORIES: dict[str, str] = {
     "1000": "Jeux",
     "4000": "Logiciels",
 }
+
+# --- Types de contenu (dossiers / catégories qBittorrent par type) -------------
+CONTENT_TYPES: dict[str, str] = {
+    "movies": "Films",
+    "series": "Séries",
+    "anime": "Animation (séries)",
+    "music": "Musique & audio",
+    "books": "Livres, BD & presse",
+    "games": "Jeux",
+    "software": "Logiciels",
+    "other": "Autre",
+}
+CONF_PATH_PREFIX = "path_"
+CONF_CAT_PREFIX = "cat_"
+
+# --- Plex & suivi des séries ---------------------------------------------------
+CONF_PLEX_URL = "plex_url"
+CONF_PLEX_TOKEN = "plex_token"
+CONF_PLEX_VERIFY_SSL = "plex_verify_ssl"
+CONF_PLEX_SECTIONS = "plex_sections"
+CONF_PLEX_INTERVAL = "plex_interval"  # minutes
+CONF_PLEX_REFRESH_ON_COMPLETE = "plex_refresh_on_complete"
+CONF_SERIES_ENABLED = "series_enabled"
+CONF_SERIES_AUTO = "series_auto"
+CONF_SERIES_FOLLOW_NEW = "series_follow_new"
+CONF_SERIES_INTERVAL = "series_interval"  # minutes
+CONF_SERIES_QUALITY = "series_quality"
+CONF_SERIES_QUALITIES = "series_qualities"
+CONF_SERIES_LANGUAGES = "series_languages"
+CONF_SERIES_MIN_SEEDERS = "series_min_seeders"
+CONF_SERIES_EXCLUDE = "series_exclude"
+CONF_SERIES_PACKS = "series_packs"
+CONF_SERIES_MAX_GRABS = "series_max_grabs"
+CONF_SERIES_NOTIFY = "series_notify"
+
+DEFAULT_PLEX_INTERVAL = 60
+DEFAULT_SERIES_INTERVAL = 30
+DEFAULT_SERIES_QUALITY = "1080p"
+DEFAULT_SERIES_QUALITIES = ["1080p", "720p"]
+DEFAULT_SERIES_LANGUAGES = ["vf"]
+DEFAULT_SERIES_EXCLUDE = "CAM, HDCAM, TS, HDTS, TELESYNC"
+DEFAULT_SERIES_MAX_GRABS = 5
+
+QUALITIES = {"2160p": "4K / 2160p", "1080p": "1080p", "720p": "720p", "sd": "SD (480p…)"}
+LANGUAGE_GROUPS = {
+    "vf": "VF / MULTi (français inclus)",
+    "vostfr": "VOSTFR (sous-titres français)",
+    "vo": "VO seule",
+}
+SERIES_CATEGORIES = ["5000", "5070", "5080"]
+
+EVENT_EPISODE_GRABBED = "c411_episode_grabbed"

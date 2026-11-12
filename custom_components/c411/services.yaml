@@ -48,4 +48,21 @@ download:
     paused:
       selector:
         boolean:
+    categories:
+      example: ["5000"]
+      selector:
+        object:
+    type:
+      selector:
+        select:
+          options:
+            - { label: "Films", value: "movies" }
+            - { label: "Séries", value: "series" }
+            - { label: "Animation (séries)", value: "anime" }
+            - { label: "Musique & audio", value: "music" }
+            - { label: "Livres, BD & presse", value: "books" }
+            - { label: "Jeux", value: "games" }
+            - { label: "Logiciels", value: "software" }
+            - { label: "Autre", value: "other" }
 refresh:
+check_series:

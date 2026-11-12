@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import aiohttp
 
 from .const import C411_MIN_REQUEST_INTERVAL
+from .content import content_type
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class C411Release:
     imdbid: str | None = None
     tmdbid: str | None = None
     freeleech: bool = False
+    content_type: str = "other"
 
     def as_dict(self) -> dict[str, Any]:
         """Version sérialisable."""
@@ -145,6 +147,7 @@ def parse_torznab(xml_text: str) -> list[C411Release]:
                 imdbid=first("imdbid") or first("imdb"),
                 tmdbid=first("tmdbid"),
                 freeleech=first("downloadvolumefactor") in {"0", "0.0"},
+                content_type=content_type(categories),
             )
         )
     return releases
