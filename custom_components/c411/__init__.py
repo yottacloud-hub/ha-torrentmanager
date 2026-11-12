@@ -235,6 +235,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DOMAIN, SERVICE_CHECK_SERIES, handle_check_series, supports_response=SupportsResponse.OPTIONAL
     )
     async_register_websocket(hass)
+    # Les vues HTTP doivent être déclarées avant le démarrage du serveur web
+    hass.http.register_view(PlexPosterView())
     return True
 
 
@@ -285,10 +287,6 @@ async def _async_setup_series(hass: HomeAssistant, entry: C411ConfigEntry) -> No
     await series.async_refresh()
     entry.runtime_data.series = series
     entry.async_on_unload(series.async_flush)
-
-    if not hass.data.get(f"{DOMAIN}_poster_view"):
-        hass.http.register_view(PlexPosterView())
-        hass.data[f"{DOMAIN}_poster_view"] = True
 
     if opts.get(CONF_SERIES_ENABLED, True):
         minutes = max(10, int(opts.get(CONF_SERIES_INTERVAL, DEFAULT_SERIES_INTERVAL)))
