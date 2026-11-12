@@ -1,4 +1,4 @@
-"""Intégration C411 + qBittorrent pour Home Assistant."""
+"""TorrentManager : C411 + qBittorrent + Plex pour Home Assistant."""
 
 from __future__ import annotations
 
@@ -54,6 +54,11 @@ from .const import (
     STATIC_URL,
 )
 from .const import (
+    APP_NAME,
+    CONF_HIDE_ADULT,
+    CONF_TMDB_KEY,
+    CONF_USER_ACCESS,
+    DEFAULT_USER_ACCESS,
     CONF_PLEX_REFRESH_ON_COMPLETE,
     CONF_PLEX_TOKEN,
     CONF_PLEX_URL,
@@ -63,8 +68,9 @@ from .const import (
     DEFAULT_SERIES_INTERVAL,
     EVENT_DOWNLOAD_COMPLETED,
 )
-from .content import content_type, resolve_destination
+from .content import content_type, filter_adult, resolve_destination
 from .plex import PlexClient
+from .tmdb import TmdbClient
 from .series import SeriesCoordinator
 from .coordinator import C411FeedCoordinator, C411RuntimeData, QBittorrentCoordinator
 from .websocket import async_register_websocket
@@ -189,7 +195,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
         except C411Error as err:
             raise HomeAssistantError(str(err)) from err
-        return {"results": [r.as_dict() for r in results]}
+        hide = get_entry(hass).options.get(CONF_HIDE_ADULT, True)
+        return {"results": filter_adult([r.as_dict() for r in results], hide)}
 
     async def handle_download(call: ServiceCall) -> None:
         url = call.data["url"]
@@ -264,9 +271,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: C411ConfigEntry) -> bool
     await feed.async_config_entry_first_refresh()
 
     entry.runtime_data = C411RuntimeData(c411=c411, qbit=qbit, feed=feed, downloads=downloads)
+    if entry.title == "C411":  # ancien nom de l'application
+        hass.config_entries.async_update_entry(entry, title=APP_NAME)
+    if key := entry.options.get(CONF_TMDB_KEY):
+        entry.runtime_data.tmdb = TmdbClient(hass, async_get_clientsession(hass), key)
     await _async_setup_series(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await _async_register_panel(hass)
+    await _async_register_panel(
+        hass, require_admin=entry.options.get(CONF_USER_ACCESS, DEFAULT_USER_ACCESS) == "admins"
+    )
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 
@@ -350,7 +363,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: C411ConfigEntry) -> boo
     return unloaded
 
 
-async def _async_register_panel(hass: HomeAssistant) -> None:
+async def _async_register_panel(hass: HomeAssistant, *, require_admin: bool) -> None:
     """Ajoute le panneau « C411 » dans la barre latérale."""
     if not hass.data.get(f"{DOMAIN}_static"):
         await hass.http.async_register_static_paths(
@@ -366,8 +379,8 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         webcomponent_name=PANEL_COMPONENT,
         frontend_url_path=PANEL_URL_PATH,
         module_url=f"{STATIC_URL}/{PANEL_FILE}?v={version}",
-        sidebar_title="C411",
+        sidebar_title="TorrentManager",
         sidebar_icon="mdi:movie-search",
-        require_admin=True,
+        require_admin=require_admin,
         config={},
     )

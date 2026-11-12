@@ -1,6 +1,6 @@
 {
   "domain": "c411",
-  "name": "C411 + qBittorrent",
+  "name": "TorrentManager",
   "codeowners": [
     "@yottacloud-hub"
   ],
@@ -17,5 +17,5 @@
   "issue_tracker": "https://github.com/yottacloud-hub/ha-torrentmanager/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

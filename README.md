@@ -1,12 +1,16 @@
-# C411 + qBittorrent pour Home Assistant
+# TorrentManager pour Home Assistant
 
-Intégration personnalisée qui affiche le contenu de **C411** directement dans Home Assistant, envoie vos choix à **qBittorrent** en un clic, et suit vos séries **Plex** pour récupérer les nouveaux épisodes dès leur sortie.
+**TorrentManager** est une intégration personnalisée qui affiche le contenu de **C411** directement dans Home Assistant, envoie vos choix à **qBittorrent** en un clic, et suit vos séries **Plex** pour récupérer les nouveaux épisodes dès leur sortie.
 
-- **Panneau « C411 »** dans la barre latérale avec trois onglets :
+- **Panneau « TorrentManager »** dans la barre latérale avec quatre onglets :
   - **Nouveautés** : derniers ajouts, filtrables par catégorie (Films, Séries, Animation…) et triables par date, sources, taille ou popularité.
   - **Recherche** : recherche plein texte sur C411, avec filtres et bouton « Afficher plus ».
   - **Séries** : vos séries Plex avec leur affiche, le dernier épisode possédé, les nouveaux épisodes trouvés sur C411 et des interrupteurs « Suivre » / « Auto ».
   - **Téléchargements** : progression en direct, vitesse, temps restant, pause / reprise / revérification / suppression (avec ou sans fichiers).
+- **Une seule carte par contenu** : les différentes versions d'un même film ou épisode sont regroupées, et la meilleure s'affiche selon vos préférences de qualité et de langue, puis selon sa réputation. Des filtres rapides (4K, 1080p, 720p ; VF/MULTi, VOSTFR) et un lien « +N versions » permettent de voir le reste.
+- **Affiches**, titre français et note TMDB pour les films et séries (clé TMDB gratuite, facultative).
+- Contenu pour adultes masqué par défaut.
+- Accessible aux utilisateurs non administrateurs, avec le niveau d'accès de votre choix.
 - Les releases déjà présentes dans qBittorrent sont reconnues grâce à leur infohash et affichent leur progression à la place du bouton « Télécharger ».
 - Les torrents envoyés reçoivent l'étiquette `c411` et sont rangés **dans le dossier et la catégorie de leur type** (films, séries, musique…).
 - Le panneau suit le thème de Home Assistant (clair ou sombre) et s'adapte au mobile.
@@ -18,7 +22,7 @@ Intégration personnalisée qui affiche le contenu de **C411** directement dans 
 1. HACS → menu ⋮ → **Dépôts personnalisés** → ajoutez `https://github.com/yottacloud-hub/ha-torrentmanager` (type : *Intégration*).
 
    [![Ouvrir dans HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=yottacloud-hub&repository=ha-torrentmanager&category=integration)
-2. Installez « C411 + qBittorrent », puis redémarrez Home Assistant.
+2. Installez « TorrentManager », puis redémarrez Home Assistant.
 
 ### À la main
 1. Copiez le dossier `custom_components/c411` dans le dossier `config/custom_components/` de Home Assistant.
@@ -31,9 +35,9 @@ Intégration personnalisée qui affiche le contenu de **C411** directement dans 
 3. Dans Home Assistant : **Paramètres → Appareils et services → Ajouter une intégration → C411**.
    - Étape 1 : adresse du site (`https://c411.org` par défaut) et clé API.
    - Étape 2 : URL, utilisateur et mot de passe de qBittorrent.
-4. Le panneau **C411** apparaît dans la barre latérale (visible uniquement par les administrateurs).
+4. Le panneau **TorrentManager** apparaît dans la barre latérale.
 
-**Options** (bouton « Configurer » de l'intégration) : un menu à quatre entrées.
+**Options** (bouton « Configurer » de l'intégration) : un menu à cinq entrées.
 
 **Général**
 
@@ -45,6 +49,27 @@ Intégration personnalisée qui affiche le contenu de **C411** directement dans 
 | Étiquette | `c411` par défaut ; sert à repérer les torrents envoyés |
 | Ajouter en pause | Pour valider avant de lancer |
 | Fréquence qBittorrent | 10 s par défaut ; le panneau ouvert actualise toutes les 4 s |
+
+**Affichage et accès**
+
+| Option | Par défaut |
+|---|---|
+| Masquer le contenu pour adultes | Activé |
+| Meilleure version seulement | Activé (modifiable aussi dans le panneau) |
+| Qualité / langue préférées pour choisir la meilleure version | 1080p / VF |
+| Clé API TMDB (affiches) | Vide. Créez un compte gratuit sur themoviedb.org, puis Paramètres → API |
+| Accès des utilisateurs non administrateurs | Consultation et téléchargement |
+
+Niveaux d'accès pour les comptes non administrateurs (les administrateurs ont toujours tous les droits) :
+
+| Niveau | Voir | Télécharger, pause / reprise, vérifier les séries | Supprimer des torrents, régler le suivi des séries |
+|---|---|---|---|
+| Administrateurs uniquement | — (panneau masqué) | — | — |
+| Consultation seule | ✓ | — | — |
+| Consultation et téléchargement | ✓ | ✓ | — |
+| Accès complet | ✓ | ✓ | ✓ |
+
+Comment est choisie la meilleure version : la qualité la plus proche de la qualité préférée, puis la langue préférée (MULTi en bonus), puis la réputation : nombre de sources, téléchargements complétés, freeleech, source (REMUX > BluRay > WEB-DL > WEBRip…). Les versions sans aucune source et les CAM sont fortement pénalisées.
 
 **Dossiers par type** : pour chaque type de contenu, un dossier (tel que qBittorrent le voit, ex. `/data/series`) et une catégorie qBittorrent.
 
@@ -179,7 +204,7 @@ content: >
 
 ## Sécurité
 
-- Le panneau, les commandes websocket et les services sont réservés aux administrateurs.
+- Le panneau et ses commandes respectent le niveau d'accès choisi pour les comptes non administrateurs. Les services Home Assistant (`c411.*`) suivent les règles habituelles de Home Assistant.
 - L'intégration ne télécharge que des liens qui pointent vers le domaine C411 configuré : elle ne peut pas servir à récupérer des fichiers depuis d'autres sites.
 - La clé API et le mot de passe qBittorrent sont stockés dans la configuration de Home Assistant, comme pour toute autre intégration.
 

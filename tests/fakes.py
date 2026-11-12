@@ -204,3 +204,57 @@ def make_plex_app(state: dict) -> web.Application:
     app.router.add_get("/library/metadata/{key}/allLeaves", leaves)
     app.router.add_get("/photo/:/transcode", transcode)
     return app
+
+
+TMDB_KEY = "tmdb-key"
+
+
+def make_tmdb_app(state: dict) -> web.Application:
+    """Faux TMDB v3."""
+    state.setdefault("tmdb_calls", [])
+    movies = {"693134": {"id": 693134, "title": "Dune : Deuxième partie", "release_date": "2024-02-28",
+                         "poster_path": "/dune.jpg", "vote_average": 8.15}}
+    tv = {"126308": {"id": 126308, "name": "Shōgun", "first_air_date": "2024-02-27",
+                     "poster_path": "/shogun.jpg", "vote_average": 8.6}}
+
+    @web.middleware
+    async def auth(request, handler):
+        state["tmdb_calls"].append(request.path)
+        if request.query.get("api_key") != TMDB_KEY:
+            return web.json_response({"status_message": "Invalid API key"}, status=401)
+        return await handler(request)
+
+    async def configuration(request):
+        return web.json_response({"images": {}})
+
+    async def movie(request):
+        m = movies.get(request.match_info["id"])
+        return web.json_response(m) if m else web.json_response({}, status=404)
+
+    async def show(request):
+        t = tv.get(request.match_info["id"])
+        return web.json_response(t) if t else web.json_response({}, status=404)
+
+    async def find(request):
+        if request.match_info["imdb"] == "tt15239678":
+            return web.json_response({"movie_results": [movies["693134"]], "tv_results": []})
+        return web.json_response({"movie_results": [], "tv_results": []})
+
+    async def search_movie(request):
+        q = request.query.get("query", "")
+        if "oppenheimer" in q:
+            return web.json_response({"results": [{"id": 872585, "title": "Oppenheimer", "release_date": "2023-07-19",
+                                                   "poster_path": "/opp.jpg", "vote_average": 8.1}]})
+        return web.json_response({"results": []})
+
+    app = web.Application(middlewares=[auth])
+    app.router.add_get("/3/configuration", configuration)
+    app.router.add_get("/3/movie/{id}", movie)
+    app.router.add_get("/3/tv/{id}", show)
+    app.router.add_get("/3/find/{imdb}", find)
+    app.router.add_get("/3/search/movie", search_movie)
+    async def search_tv(request):
+        return web.json_response({"results": []})
+
+    app.router.add_get("/3/search/tv", search_tv)
+    return app

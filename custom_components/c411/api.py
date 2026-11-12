@@ -15,6 +15,7 @@ import aiohttp
 
 from .const import C411_MIN_REQUEST_INTERVAL
 from .content import content_type
+from .releaseinfo import release_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class C411Release:
     tmdbid: str | None = None
     freeleech: bool = False
     content_type: str = "other"
+    info: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         """Version sérialisable."""
@@ -131,10 +133,12 @@ def parse_torznab(xml_text: str) -> list[C411Release]:
             details = None
 
         infohash = first("infohash")
+        ctype = content_type(categories)
+        title = (item.findtext("title") or "").strip()
         releases.append(
             C411Release(
                 guid=item.findtext("guid") or download_url or item.findtext("title") or "",
-                title=(item.findtext("title") or "").strip(),
+                title=title,
                 details_url=details,
                 download_url=download_url,
                 size=size,
@@ -147,7 +151,8 @@ def parse_torznab(xml_text: str) -> list[C411Release]:
                 imdbid=first("imdbid") or first("imdb"),
                 tmdbid=first("tmdbid"),
                 freeleech=first("downloadvolumefactor") in {"0", "0.0"},
-                content_type=content_type(categories),
+                content_type=ctype,
+                info=release_info(title, ctype),
             )
         )
     return releases

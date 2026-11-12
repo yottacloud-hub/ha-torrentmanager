@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connexion à C411",
+        "title": "TorrentManager — connexion à C411",
         "description": "Générez une clé API sur la page « Intégrations API » de votre compte C411 ({integrations_url}).",
         "data": {
           "c411_url": "Adresse du site",
@@ -54,9 +54,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "Options C411",
+        "title": "Options TorrentManager",
         "menu_options": {
           "general": "Général (nouveautés, qBittorrent)",
+          "display": "Affichage et accès des utilisateurs",
           "folders": "Dossiers et catégories par type",
           "plex": "Connexion Plex",
           "series": "Suivi des séries"
@@ -126,11 +127,25 @@
           "plex_interval": "Fréquence de relecture de la bibliothèque Plex",
           "series_notify": "Notification Home Assistant à chaque épisode envoyé"
         }
+      },
+      "display": {
+        "title": "Affichage et accès",
+        "description": "Les affiches viennent de TMDB : créez un compte gratuit sur themoviedb.org, puis Paramètres → API pour obtenir une clé. Sans clé, seules vos séries Plex ont une affiche.",
+        "data": {
+          "hide_adult": "Masquer le contenu pour adultes",
+          "best_only": "N'afficher que la meilleure version de chaque contenu (par défaut)",
+          "pref_quality": "Qualité préférée pour choisir la meilleure version",
+          "pref_language": "Langue préférée pour choisir la meilleure version",
+          "tmdb_api_key": "Clé API TMDB (affiches, facultatif)",
+          "user_access": "Accès des utilisateurs non administrateurs"
+        }
       }
     },
     "error": {
       "invalid_plex_token": "Jeton Plex refusé.",
-      "cannot_connect_plex": "Impossible de joindre le serveur Plex."
+      "cannot_connect_plex": "Impossible de joindre le serveur Plex.",
+      "invalid_tmdb_key": "Clé TMDB refusée.",
+      "cannot_connect_tmdb": "Impossible de joindre TMDB."
     },
     "abort": {
       "plex_required": "Configurez d'abord la connexion Plex."

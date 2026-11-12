@@ -20,7 +20,9 @@ from .api import (
     QBittorrentClient,
     QBittorrentError,
 )
+from .content import filter_adult
 from .const import (
+    CONF_HIDE_ADULT,
     CONF_FEED_CATEGORIES,
     CONF_FEED_INTERVAL,
     CONF_FEED_LIMIT,
@@ -50,6 +52,7 @@ class C411RuntimeData:
     feed: C411FeedCoordinator
     downloads: QBittorrentCoordinator
     series: Any = None  # SeriesCoordinator quand Plex est configuré
+    tmdb: Any = None  # TmdbClient quand une clé TMDB est configurée
 
 
 class C411FeedCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
@@ -81,7 +84,7 @@ class C411FeedCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         except C411Error as err:
             raise UpdateFailed(str(err)) from err
 
-        data = [r.as_dict() for r in releases]
+        data = filter_adult([r.as_dict() for r in releases], opts.get(CONF_HIDE_ADULT, True))
         guids = {r["guid"] for r in data}
         if self._seen is not None:
             new = [r for r in data if r["guid"] not in self._seen]

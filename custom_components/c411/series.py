@@ -40,7 +40,7 @@ from .const import (
     EVENT_EPISODE_GRABBED,
     SERIES_CATEGORIES,
 )
-from .matcher import Rules, code, match_show, parse_release, score, show_keys
+from .matcher import ParsedRelease, Rules, code, match_show, parse_release, score, show_keys
 from .plex import PlexAuthError, PlexClient, PlexError
 
 if TYPE_CHECKING:
@@ -423,6 +423,16 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await self.plex.refresh_section(section["key"])
         except PlexError as err:
             _LOGGER.warning("Rafraîchissement Plex impossible : %s", err)
+
+    def poster_for(self, item: dict[str, Any]) -> str | None:
+        """URL de l'affiche Plex d'une série correspondant à une release (épisode / pack)."""
+        if item.get("kind") not in ("episode", "pack") or not item.get("name"):
+            return None
+        parsed = ParsedRelease(name=item["name"], year=item.get("year"), season=item.get("season") or 0)
+        show = match_show(parsed, item, list(self._shows.values()))
+        if show is None or not show.get("thumb"):
+            return None
+        return f"/api/c411/plex/poster/{show['rating_key']}?s={self.poster_secret}"
 
     # ------------------------------------------------------------ données
     def _payload(self) -> dict[str, Any]:

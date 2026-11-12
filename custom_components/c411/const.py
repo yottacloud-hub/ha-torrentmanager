@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-DOMAIN = "c411"
+DOMAIN = "c411"  # identifiant technique conservé (changer casserait les installations existantes)
+APP_NAME = "TorrentManager"
 
 # --- Données du config entry -------------------------------------------------
 CONF_C411_URL = "c411_url"
@@ -141,3 +142,25 @@ LANGUAGE_GROUPS = {
 SERIES_CATEGORIES = ["5000", "5070", "5080"]
 
 EVENT_EPISODE_GRABBED = "c411_episode_grabbed"
+
+# --- Affichage ---------------------------------------------------------------
+CONF_HIDE_ADULT = "hide_adult"
+CONF_BEST_ONLY = "best_only"
+CONF_PREF_QUALITY = "pref_quality"
+CONF_PREF_LANGUAGE = "pref_language"
+CONF_TMDB_KEY = "tmdb_api_key"
+DEFAULT_PREF_QUALITY = "1080p"
+DEFAULT_PREF_LANGUAGE = "vf"
+
+TMDB_API = "https://api.themoviedb.org/3"
+TMDB_IMAGE = "https://image.tmdb.org/t/p/w185"
+
+# --- Accès des utilisateurs non administrateurs -------------------------------
+CONF_USER_ACCESS = "user_access"
+ACCESS_LEVELS = {
+    "admins": "Administrateurs uniquement",
+    "view": "Consultation seule",
+    "download": "Consultation et téléchargement",
+    "full": "Accès complet (suppression, réglages des séries)",
+}
+DEFAULT_USER_ACCESS = "download"

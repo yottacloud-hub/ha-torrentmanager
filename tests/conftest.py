@@ -1,7 +1,7 @@
 import pytest
 from aiohttp import web
 
-from .fakes import make_c411_app, make_plex_app, make_qbit_app
+from .fakes import make_c411_app, make_plex_app, make_qbit_app, make_tmdb_app
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,10 @@ async def servers(socket_enabled):
     state["qb_base"] = q_base
     p_runner, p_base = await _start(make_plex_app(state))
     state["plex_base"] = p_base
+    t_runner, t_base = await _start(make_tmdb_app(state))
+    state["tmdb_base"] = t_base
     yield state
+    await t_runner.cleanup()
     await c_runner.cleanup()
     await q_runner.cleanup()
     await p_runner.cleanup()
