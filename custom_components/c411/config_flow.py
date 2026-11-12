@@ -31,6 +31,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .plex import PlexAuthError, PlexClient, PlexError
 from .api import (
     C411AuthError,
     C411Client,
@@ -41,6 +42,36 @@ from .api import (
 )
 from .const import (
     CATEGORIES,
+    CONF_CAT_PREFIX,
+    CONF_PATH_PREFIX,
+    CONF_PLEX_INTERVAL,
+    CONF_PLEX_REFRESH_ON_COMPLETE,
+    CONF_PLEX_SECTIONS,
+    CONF_PLEX_TOKEN,
+    CONF_PLEX_URL,
+    CONF_PLEX_VERIFY_SSL,
+    CONF_SERIES_AUTO,
+    CONF_SERIES_ENABLED,
+    CONF_SERIES_EXCLUDE,
+    CONF_SERIES_FOLLOW_NEW,
+    CONF_SERIES_INTERVAL,
+    CONF_SERIES_LANGUAGES,
+    CONF_SERIES_MAX_GRABS,
+    CONF_SERIES_MIN_SEEDERS,
+    CONF_SERIES_NOTIFY,
+    CONF_SERIES_PACKS,
+    CONF_SERIES_QUALITIES,
+    CONF_SERIES_QUALITY,
+    CONTENT_TYPES,
+    DEFAULT_PLEX_INTERVAL,
+    DEFAULT_SERIES_EXCLUDE,
+    DEFAULT_SERIES_INTERVAL,
+    DEFAULT_SERIES_LANGUAGES,
+    DEFAULT_SERIES_MAX_GRABS,
+    DEFAULT_SERIES_QUALITIES,
+    DEFAULT_SERIES_QUALITY,
+    LANGUAGE_GROUPS,
+    QUALITIES,
     CONF_API_KEY,
     CONF_C411_URL,
     CONF_FEED_CATEGORIES,
@@ -212,21 +243,37 @@ class C411ConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class C411OptionsFlow(OptionsFlow):
-    """Options : flux, qBittorrent, rafraîchissement."""
+    """Options, organisées en menu."""
+
+    def _save(self, user_input: dict[str, Any], blank: tuple[str, ...] = ()) -> ConfigFlowResult:
+        # Un champ facultatif vidé n'est pas renvoyé par le formulaire : on l'efface explicitement.
+        for key in blank:
+            user_input.setdefault(key, "")
+        for key, value in list(user_input.items()):
+            if isinstance(value, float) and value.is_integer():
+                user_input[key] = int(value)
+        return self.async_create_entry(data={**self.config_entry.options, **user_input})
+
+    async def _qb_categories(self) -> list[str]:
+        rt = getattr(self.config_entry, "runtime_data", None)
+        if rt is None:
+            return []
+        try:
+            return await rt.qbit.categories()
+        except Exception:  # noqa: BLE001
+            return []
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return self.async_show_menu(step_id="init", menu_options=["general", "folders", "plex", "series"])
+
+    # ---------------------------------------------------------------- général
+    async def async_step_general(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
-            for key in (CONF_FEED_LIMIT, CONF_FEED_INTERVAL, CONF_QB_INTERVAL):
-                user_input[key] = int(user_input[key])
-            return self.async_create_entry(data=user_input)
+            return self._save(user_input, blank=(CONF_QB_CATEGORY, CONF_QB_SAVE_PATH))
 
         opts = self.config_entry.options
-        qb_categories: list[str] = []
-        rt = getattr(self.config_entry, "runtime_data", None)
-        if rt is not None:
-            qb_categories = await rt.qbit.categories()
+        qb_categories = await self._qb_categories()
         cat_options = [SelectOptionDict(value=k, label=f"{v} ({k})") for k, v in CATEGORIES.items()]
-
         schema = vol.Schema(
             {
                 vol.Optional(CONF_FEED_CATEGORIES, default=opts.get(CONF_FEED_CATEGORIES, [])): SelectSelector(
@@ -249,4 +296,117 @@ class C411OptionsFlow(OptionsFlow):
                 ),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="general", data_schema=schema)
+
+    # ---------------------------------------------------------------- dossiers
+    async def async_step_folders(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        keys = tuple(f"{p}{t}" for t in CONTENT_TYPES for p in (CONF_PATH_PREFIX, CONF_CAT_PREFIX))
+        if user_input is not None:
+            return self._save(user_input, blank=keys)
+
+        opts = self.config_entry.options
+        qb_categories = await self._qb_categories()
+        fields: dict[Any, Any] = {}
+        for t in CONTENT_TYPES:
+            path_key, cat_key = f"{CONF_PATH_PREFIX}{t}", f"{CONF_CAT_PREFIX}{t}"
+            fields[vol.Optional(path_key, description={"suggested_value": opts.get(path_key)})] = str
+            fields[vol.Optional(cat_key, description={"suggested_value": opts.get(cat_key)})] = SelectSelector(
+                SelectSelectorConfig(options=qb_categories, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
+            )
+        return self.async_show_form(step_id="folders", data_schema=vol.Schema(fields))
+
+    # ---------------------------------------------------------------- Plex
+    async def async_step_plex(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        placeholders = {"server": ""}
+        if user_input is not None:
+            url = (user_input.get(CONF_PLEX_URL) or "").strip().rstrip("/")
+            user_input[CONF_PLEX_URL] = url
+            if url:
+                session = aiohttp.ClientSession(
+                    connector=aiohttp.TCPConnector(ssl=None if user_input[CONF_PLEX_VERIFY_SSL] else False)
+                )
+                try:
+                    await PlexClient(session, url, user_input.get(CONF_PLEX_TOKEN, "")).server_name()
+                except PlexAuthError:
+                    errors["base"] = "invalid_plex_token"
+                except PlexError as err:
+                    _LOGGER.warning("Connexion Plex impossible : %s", err)
+                    errors["base"] = "cannot_connect_plex"
+                finally:
+                    await session.close()
+            if not errors:
+                return self._save(user_input, blank=(CONF_PLEX_URL, CONF_PLEX_TOKEN))
+
+        opts = {**self.config_entry.options, **(user_input or {})}
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_PLEX_URL, description={"suggested_value": opts.get(CONF_PLEX_URL)}): URL,
+                vol.Optional(CONF_PLEX_TOKEN, description={"suggested_value": opts.get(CONF_PLEX_TOKEN)}): PASSWORD,
+                vol.Required(CONF_PLEX_VERIFY_SSL, default=opts.get(CONF_PLEX_VERIFY_SSL, True)): BooleanSelector(),
+                vol.Required(
+                    CONF_PLEX_REFRESH_ON_COMPLETE, default=opts.get(CONF_PLEX_REFRESH_ON_COMPLETE, True)
+                ): BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="plex", data_schema=schema, errors=errors, description_placeholders=placeholders
+        )
+
+    # ---------------------------------------------------------------- séries
+    async def async_step_series(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        opts = self.config_entry.options
+        if not (opts.get(CONF_PLEX_URL) and opts.get(CONF_PLEX_TOKEN)):
+            return self.async_abort(reason="plex_required")
+        if user_input is not None:
+            return self._save(user_input, blank=(CONF_SERIES_EXCLUDE,))
+
+        sections: list[SelectOptionDict] = []
+        rt = getattr(self.config_entry, "runtime_data", None)
+        if rt is not None and rt.series is not None:
+            try:
+                sections = [
+                    SelectOptionDict(value=s["key"], label=s["title"])
+                    for s in await rt.series.plex.sections() if s["type"] == "show"
+                ]
+            except PlexError:
+                sections = []
+        q_options = [SelectOptionDict(value=k, label=v) for k, v in QUALITIES.items()]
+        l_options = [SelectOptionDict(value=k, label=v) for k, v in LANGUAGE_GROUPS.items()]
+
+        def box(min_: int, max_: int, unit: str | None = None) -> NumberSelector:
+            cfg = NumberSelectorConfig(min=min_, max=max_, step=1, mode=NumberSelectorMode.BOX)
+            if unit:
+                cfg["unit_of_measurement"] = unit
+            return NumberSelector(cfg)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_SERIES_ENABLED, default=opts.get(CONF_SERIES_ENABLED, True)): BooleanSelector(),
+                vol.Required(CONF_SERIES_AUTO, default=opts.get(CONF_SERIES_AUTO, True)): BooleanSelector(),
+                vol.Required(CONF_SERIES_FOLLOW_NEW, default=opts.get(CONF_SERIES_FOLLOW_NEW, True)): BooleanSelector(),
+                vol.Optional(CONF_PLEX_SECTIONS, default=opts.get(CONF_PLEX_SECTIONS, [])): SelectSelector(
+                    SelectSelectorConfig(options=sections, multiple=True, mode=SelectSelectorMode.LIST)
+                ),
+                vol.Required(CONF_SERIES_QUALITY, default=opts.get(CONF_SERIES_QUALITY, DEFAULT_SERIES_QUALITY)): SelectSelector(
+                    SelectSelectorConfig(options=q_options, mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_SERIES_QUALITIES, default=opts.get(CONF_SERIES_QUALITIES, DEFAULT_SERIES_QUALITIES)): SelectSelector(
+                    SelectSelectorConfig(options=q_options, multiple=True, mode=SelectSelectorMode.LIST)
+                ),
+                vol.Required(CONF_SERIES_LANGUAGES, default=opts.get(CONF_SERIES_LANGUAGES, DEFAULT_SERIES_LANGUAGES)): SelectSelector(
+                    SelectSelectorConfig(options=l_options, multiple=True, mode=SelectSelectorMode.LIST)
+                ),
+                vol.Required(CONF_SERIES_MIN_SEEDERS, default=opts.get(CONF_SERIES_MIN_SEEDERS, 1)): box(0, 100),
+                vol.Optional(
+                    CONF_SERIES_EXCLUDE,
+                    description={"suggested_value": opts.get(CONF_SERIES_EXCLUDE, DEFAULT_SERIES_EXCLUDE)},
+                ): str,
+                vol.Required(CONF_SERIES_PACKS, default=opts.get(CONF_SERIES_PACKS, True)): BooleanSelector(),
+                vol.Required(CONF_SERIES_MAX_GRABS, default=opts.get(CONF_SERIES_MAX_GRABS, DEFAULT_SERIES_MAX_GRABS)): box(1, 50),
+                vol.Required(CONF_SERIES_INTERVAL, default=opts.get(CONF_SERIES_INTERVAL, DEFAULT_SERIES_INTERVAL)): box(10, 720, "min"),
+                vol.Required(CONF_PLEX_INTERVAL, default=opts.get(CONF_PLEX_INTERVAL, DEFAULT_PLEX_INTERVAL)): box(10, 1440, "min"),
+                vol.Required(CONF_SERIES_NOTIFY, default=opts.get(CONF_SERIES_NOTIFY, True)): BooleanSelector(),
+            }
+        )
+        return self.async_show_form(step_id="series", data_schema=schema)

@@ -1,0 +1,55 @@
+name: Release
+
+# Publie une release GitHub dès que la version du manifeste change sur main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - custom_components/c411/manifest.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version du manifeste
+        id: v
+        run: |
+          V=$(python3 -c "import json;print(json.load(open('custom_components/c411/manifest.json'))['version'])")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if git rev-parse "v$V" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notes de version (CHANGELOG.md)
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          awk -v v="$V" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Version $V" > notes.md
+          cat notes.md
+
+      - name: Archive de l'intégration
+        if: steps.v.outputs.exists == 'false'
+        run: cd custom_components/c411 && zip -r ../../c411.zip . -x '__pycache__/*'
+
+      - name: Création de la release
+        if: steps.v.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          gh release create "v$V" c411.zip --title "v$V" --notes-file notes.md --target "$GITHUB_SHA"

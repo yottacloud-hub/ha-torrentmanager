@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from aiohttp import web
 import pytest
 
 from homeassistant import config_entries
@@ -80,14 +79,15 @@ async def test_full_flow(hass: HomeAssistant, servers, hass_ws_client) -> None:
     assert msg["result"]["qb_categories"] == ["films", "series"]
     assert msg["result"]["qbittorrent_version"] == "v5.0.1"
 
-    await ws.send_json({"id": 2, "type": "c411/search", "query": "shogun", "categories": ["5000"]})
+    await ws.send_json({"id": 2, "type": "c411/search", "query": "", "categories": ["2000", "5000"]})
     msg = await ws.receive_json()
     assert msg["success"], msg
     res = msg["result"]["results"]
     assert res[0]["seeders"] == 154 and res[0]["freeleech"] is True
     assert res[0]["infohash"] == "a" * 40
     assert res[0]["categories"] == ["2000", "2030"]
-    assert servers["c411_calls"][-1]["q"] == "shogun" and servers["c411_calls"][-1]["cat"] == "5000"
+    assert servers["c411_calls"][-1]["cat"] == "2000,5000"
+    assert res[0]["content_type"] == "movies" and res[1]["content_type"] == "series"
 
     await ws.send_json({"id": 3, "type": "c411/latest"})
     msg = await ws.receive_json()
@@ -146,7 +146,7 @@ async def test_full_flow(hass: HomeAssistant, servers, hass_ws_client) -> None:
     resp = await hass.services.async_call(
         DOMAIN, "search", {"query": "dune", "limit": 5}, blocking=True, return_response=True
     )
-    assert len(resp["results"]) == 2
+    assert len(resp["results"]) == 1
 
     await hass.services.async_call(DOMAIN, "download", {"url": res[0]["download_url"]}, blocking=True)
     assert len(servers["added"]) == 2 and "category" not in servers["added"][-1]
@@ -156,7 +156,9 @@ async def test_full_flow(hass: HomeAssistant, servers, hass_ws_client) -> None:
 
     # --- Options puis rechargement
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
+    assert result["type"] is FlowResultType.MENU
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "general"})
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "general"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {"feed_categories": ["2000"], "feed_limit": 20, "feed_interval": 15, "qb_category": "films",

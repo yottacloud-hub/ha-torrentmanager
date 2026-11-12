@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from .api import C411Error, QBittorrentError
 from .const import (
     CATEGORIES,
+    CONTENT_TYPES,
     CONF_QB_CATEGORY,
     CONF_QB_SAVE_PATH,
     CONF_QB_TAG,
@@ -28,7 +29,10 @@ ACTIONS = ["pause", "resume", "delete", "delete_files", "recheck", "reannounce"]
 @callback
 def async_register_websocket(hass: HomeAssistant) -> None:
     """Enregistre les commandes."""
-    for handler in (ws_config, ws_latest, ws_search, ws_download, ws_torrents, ws_action):
+    for handler in (
+        ws_config, ws_latest, ws_search, ws_download, ws_torrents, ws_action,
+        ws_series, ws_series_update, ws_series_check, ws_series_grab, ws_series_forget,
+    ):
         websocket_api.async_register_command(hass, handler)
 
 
@@ -62,6 +66,16 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
             "default_save_path": entry.options.get(CONF_QB_SAVE_PATH) or "",
             "start_paused": bool(entry.options.get(CONF_START_PAUSED, False)),
             "tag": entry.options.get(CONF_QB_TAG, DEFAULT_QB_TAG),
+            "folders": [
+                {
+                    "type": t,
+                    "label": label,
+                    "path": entry.options.get(f"path_{t}") or entry.options.get(CONF_QB_SAVE_PATH) or "",
+                    "category": entry.options.get(f"cat_{t}") or entry.options.get(CONF_QB_CATEGORY) or "",
+                }
+                for t, label in CONTENT_TYPES.items()
+            ],
+            "plex": rt.series is not None,
         },
     )
 
@@ -128,6 +142,8 @@ async def ws_search(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         vol.Optional("category"): str,
         vol.Optional("save_path"): str,
         vol.Optional("paused"): bool,
+        vol.Optional("categories", default=[]): [vol.Coerce(str)],
+        vol.Optional("content_type"): vol.In(list(CONTENT_TYPES)),
     }
 )
 @websocket_api.async_response
@@ -137,7 +153,8 @@ async def ws_download(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
 
     try:
         result = await async_send_to_qbittorrent(
-            hass, msg["url"], title=msg.get("title"), category=msg.get("category"),
+            hass, msg["url"], title=msg.get("title"), categories=msg["categories"],
+            ctype=msg.get("content_type"), category=msg.get("category"),
             save_path=msg.get("save_path"), paused=msg.get("paused"),
         )
     except HomeAssistantError as err:
@@ -185,3 +202,117 @@ async def ws_action(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         _err(connection, msg, err)
         return
     connection.send_result(msg["id"], data)
+
+
+# --------------------------------------------------------------------- séries
+def _series(hass: HomeAssistant):
+    from . import get_runtime  # noqa: PLC0415
+
+    return get_runtime(hass).series
+
+
+def _series_payload(series) -> dict[str, Any]:
+    data = dict(series.data or {"shows": []})
+    data["configured"] = True
+    data["poster_secret"] = series.poster_secret
+    data["library_error"] = None if series.last_update_success else str(series.last_exception)
+    return data
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "c411/series"})
+@websocket_api.async_response
+async def ws_series(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Séries Plex et épisodes disponibles."""
+    try:
+        series = _series(hass)
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    if series is None:
+        connection.send_result(msg["id"], {"configured": False, "shows": []})
+        return
+    connection.send_result(msg["id"], _series_payload(series))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "c411/series_update",
+        vol.Required("rating_key"): str,
+        vol.Optional("follow"): bool,
+        vol.Optional("auto"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_series_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Suivre / ne plus suivre une série."""
+    try:
+        series = _series(hass)
+        if series is None:
+            raise HomeAssistantError("Plex n'est pas configuré")
+        await series.async_set_prefs(msg["rating_key"], msg.get("follow"), msg.get("auto"))
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _series_payload(series))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "c411/series_check",
+        vol.Optional("rating_key"): str,
+        vol.Optional("library", default=False): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_series_check(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Relit Plex et/ou cherche les nouveaux épisodes (toutes les séries ou une seule)."""
+    try:
+        series = _series(hass)
+        if series is None:
+            raise HomeAssistantError("Plex n'est pas configuré")
+        if msg["library"]:
+            await series.async_refresh()
+        await series.async_check(msg.get("rating_key"))
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _series_payload(series))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {vol.Required("type"): "c411/series_grab", vol.Required("rating_key"): str, vol.Required("key"): str}
+)
+@websocket_api.async_response
+async def ws_series_grab(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Télécharge un épisode disponible."""
+    try:
+        series = _series(hass)
+        if series is None:
+            raise HomeAssistantError("Plex n'est pas configuré")
+        await series.async_grab(msg["rating_key"], msg["key"])
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _series_payload(series))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {vol.Required("type"): "c411/series_forget", vol.Required("rating_key"): str, vol.Required("code"): str}
+)
+@websocket_api.async_response
+async def ws_series_forget(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Oublie un épisode récupéré (il pourra être retéléchargé)."""
+    try:
+        series = _series(hass)
+        if series is None:
+            raise HomeAssistantError("Plex n'est pas configuré")
+        await series.async_forget(msg["rating_key"], msg["code"])
+    except HomeAssistantError as err:
+        _err(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _series_payload(series))

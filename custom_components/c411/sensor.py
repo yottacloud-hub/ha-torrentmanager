@@ -83,6 +83,8 @@ async def async_setup_entry(
     entities: list[SensorEntity] = [LatestReleaseSensor(entry)]
     entities += [QbSensor(entry, desc) for desc in QB_SENSORS]
     entities.append(C411DownloadsListSensor(entry))
+    if entry.runtime_data.series is not None:
+        entities += [FollowedShowsSensor(entry), AvailableEpisodesSensor(entry)]
     async_add_entities(entities)
 
 
@@ -95,6 +97,14 @@ def _device(entry: C411ConfigEntry, kind: str) -> DeviceInfo:
             manufacturer="Community 411",
             entry_type=DeviceEntryType.SERVICE,
             configuration_url=rt.c411.base_url,
+        )
+    if kind == "plex":
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_plex")},
+            name="Plex – suivi des séries",
+            manufacturer="Plex",
+            entry_type=DeviceEntryType.SERVICE,
+            configuration_url=rt.series.plex.url if rt.series else None,
         )
     return DeviceInfo(
         identifiers={(DOMAIN, f"{entry.entry_id}_qbittorrent")},
@@ -195,4 +205,60 @@ class C411DownloadsListSensor(CoordinatorEntity, SensorEntity):
                 }
                 for t in self._items()[:15]
             ]
+        }
+
+
+class FollowedShowsSensor(CoordinatorEntity, SensorEntity):
+    """Nombre de séries Plex suivies."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "followed_shows"
+    _attr_icon = "mdi:television-play"
+
+    def __init__(self, entry: C411ConfigEntry) -> None:
+        super().__init__(entry.runtime_data.series)
+        self._attr_unique_id = f"{entry.entry_id}_followed_shows"
+        self._attr_device_info = _device(entry, "plex")
+
+    @property
+    def native_value(self) -> int | None:
+        data = self.coordinator.data
+        return data["followed"] if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "plex_server": data.get("server_name"),
+            "last_check": data.get("last_check"),
+            "total_shows": len(data.get("shows", [])),
+        }
+
+
+class AvailableEpisodesSensor(CoordinatorEntity, SensorEntity):
+    """Nouveaux épisodes trouvés sur C411 pour les séries suivies."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "available_episodes"
+    _attr_icon = "mdi:new-box"
+    _unrecorded_attributes = frozenset({"episodes"})
+
+    def __init__(self, entry: C411ConfigEntry) -> None:
+        super().__init__(entry.runtime_data.series)
+        self._attr_unique_id = f"{entry.entry_id}_available_episodes"
+        self._attr_device_info = _device(entry, "plex")
+
+    @property
+    def native_value(self) -> int | None:
+        data = self.coordinator.data
+        return data["available_count"] if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "episodes": [
+                {"show": s["title"], "episode": a["key"], "release": a["title"], "quality": a["quality"]}
+                for s in data.get("shows", []) if s["follow"] for a in s["available"]
+            ][:30]
         }

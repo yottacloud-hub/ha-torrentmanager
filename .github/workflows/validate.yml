@@ -6,6 +6,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: La version du manifeste est documentée dans CHANGELOG.md
+        run: |
+          V=$(python3 -c "import json;print(json.load(open('custom_components/c411/manifest.json'))['version'])")
+          grep -q "^## \[$V\]" CHANGELOG.md || { echo "::error::Ajoutez une section ## [$V] dans CHANGELOG.md"; exit 1; }
+
   hassfest:
     runs-on: ubuntu-latest
     steps:

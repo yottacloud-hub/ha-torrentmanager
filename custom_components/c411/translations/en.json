@@ -55,17 +55,85 @@
     "step": {
       "init": {
         "title": "C411 options",
+        "menu_options": {
+          "general": "General (new releases, qBittorrent)",
+          "folders": "Folders and categories per type",
+          "plex": "Plex connection",
+          "series": "TV show tracking"
+        }
+      },
+      "general": {
+        "title": "General",
         "data": {
           "feed_categories": "Categories watched for new releases (empty = all)",
           "feed_limit": "Number of new releases fetched",
           "feed_interval": "New releases refresh interval",
-          "qb_category": "Default qBittorrent category",
-          "qb_save_path": "Save path (empty = qBittorrent default)",
+          "qb_category": "Default qBittorrent category (when none is set for the type)",
+          "qb_save_path": "Default save path (when none is set for the type)",
           "qb_tag": "Tag added to C411 torrents",
           "start_paused": "Add torrents paused",
           "qb_interval": "qBittorrent polling interval"
         }
+      },
+      "folders": {
+        "title": "Folders per type",
+        "description": "Where qBittorrent stores each content type, e.g. `/data/movies`, `/data/tv`. Paths as seen by qBittorrent. Leave empty to use the default folder.",
+        "data": {
+          "path_movies": "Movies — folder",
+          "cat_movies": "Movies — qBittorrent category",
+          "path_series": "TV shows — folder",
+          "cat_series": "TV shows — qBittorrent category",
+          "path_anime": "Animation (series) — folder",
+          "cat_anime": "Animation (series) — qBittorrent category",
+          "path_music": "Music & audio — folder",
+          "cat_music": "Music & audio — qBittorrent category",
+          "path_books": "Books, comics & press — folder",
+          "cat_books": "Books, comics & press — qBittorrent category",
+          "path_games": "Games — folder",
+          "cat_games": "Games — qBittorrent category",
+          "path_software": "Software — folder",
+          "cat_software": "Software — qBittorrent category",
+          "path_other": "Other — folder",
+          "cat_other": "Other — qBittorrent category"
+        }
+      },
+      "plex": {
+        "title": "Plex connection",
+        "description": "Server address, e.g. `http://192.168.1.20:32400`. To find the token: in Plex Web open an episode → ⋯ → “Get Info” → “View XML”; the token is the `X-Plex-Token` value in the URL. Clear the address to disconnect Plex.",
+        "data": {
+          "plex_url": "Plex server URL",
+          "plex_token": "Plex token (X-Plex-Token)",
+          "plex_verify_ssl": "Verify SSL certificate",
+          "plex_refresh_on_complete": "Rescan Plex when a C411 download completes"
+        }
+      },
+      "series": {
+        "title": "TV show tracking",
+        "description": "For each Plex show, the integration looks on C411 for episodes after the latest one in Plex.",
+        "data": {
+          "series_enabled": "Enable TV show tracking",
+          "series_auto": "Automatically download new episodes",
+          "series_follow_new": "Automatically follow shows added to Plex",
+          "plex_sections": "Plex libraries to follow (empty = all)",
+          "series_quality": "Preferred quality",
+          "series_qualities": "Accepted qualities",
+          "series_languages": "Accepted languages (in order of preference)",
+          "series_min_seeders": "Minimum seeders",
+          "series_exclude": "Excluded words (comma separated)",
+          "series_packs": "Accept full-season packs (seasons missing from Plex)",
+          "series_max_grabs": "Max automatic downloads per check",
+          "series_interval": "C411 check interval",
+          "plex_interval": "Plex library reload interval",
+          "series_notify": "Home Assistant notification for each episode sent"
+        }
       }
+    },
+    "error": {
+      "invalid_plex_token": "Plex token rejected.",
+      "cannot_connect_plex": "Cannot reach the Plex server."
+    },
+    "abort": {
+      "plex_required": "Set up the Plex connection first."
     }
   },
   "entity": {
@@ -90,6 +158,12 @@
       },
       "c411_progress": {
         "name": "C411 torrents"
+      },
+      "followed_shows": {
+        "name": "Followed shows"
+      },
+      "available_episodes": {
+        "name": "New episodes available"
       }
     }
   },
@@ -126,21 +200,33 @@
         },
         "category": {
           "name": "qBittorrent category",
-          "description": "Overrides the default category."
+          "description": "Overrides the type's category."
         },
         "save_path": {
           "name": "Save path",
-          "description": "Overrides the default path."
+          "description": "Overrides the type's folder."
         },
         "paused": {
           "name": "Paused",
           "description": "Add the torrent paused."
+        },
+        "categories": {
+          "name": "C411 categories",
+          "description": "Used to determine the type (folder)."
+        },
+        "type": {
+          "name": "Content type",
+          "description": "movies, series, anime, music, books, games, software, other"
         }
       }
     },
     "refresh": {
       "name": "Refresh",
       "description": "Refresh C411 new releases and qBittorrent status."
+    },
+    "check_series": {
+      "name": "Check TV shows",
+      "description": "Looks on C411 for new episodes of followed Plex shows (and downloads them when automatic mode is on)."
     }
   }
 }
