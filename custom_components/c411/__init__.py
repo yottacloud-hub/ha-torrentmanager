@@ -34,7 +34,15 @@ from homeassistant.helpers.aiohttp_client import (
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.typing import ConfigType
 
-from .api import C411Client, C411Error, QBittorrentClient, QBittorrentError
+from .api import (
+    C411AuthError,
+    C411Client,
+    C411Error,
+    C411Refused,
+    QBittorrentClient,
+    QBittorrentError,
+    QBittorrentInvalidTorrent,
+)
 from .const import (
     CONF_API_KEY,
     CONF_C411_URL,
@@ -70,6 +78,7 @@ from .const import (
 )
 from .content import content_type, filter_adult, resolve_destination
 from .plex import PlexClient
+from .recommend import Recommender
 from .tmdb import TmdbClient
 from .series import SeriesCoordinator
 from .coordinator import C411FeedCoordinator, C411RuntimeData, QBittorrentCoordinator
@@ -157,20 +166,32 @@ async def async_send_to_qbittorrent(
     paused = paused if paused is not None else bool(opts.get(CONF_START_PAUSED, False))
     tag = opts.get(CONF_QB_TAG, DEFAULT_QB_TAG)
 
+    common = {"category": category, "save_path": save_path, "tags": tag, "paused": paused}
+    torrent: bytes | None = None
+    magnet: str | None = None
     try:
         torrent, magnet = await rt.c411.fetch_torrent(url)
-    except C411Error as err:
+    except (C411AuthError, C411Refused) as err:
         raise HomeAssistantError(str(err)) from err
+    except C411Error as err:
+        # Fichier inexploitable côté Home Assistant : on laisse qBittorrent essayer avec le lien.
+        _LOGGER.warning("Fichier .torrent inexploitable (%s) ; envoi du lien à qBittorrent", err)
+        magnet = rt.c411.download_link(url) if rt.c411.is_own_url(url) else None
+        if magnet is None:
+            raise HomeAssistantError(str(err)) from err
     try:
-        await rt.qbit.add_torrent(
-            torrent=torrent,
-            magnet=magnet,
-            filename=_safe_filename(title),
-            category=category,
-            save_path=save_path,
-            tags=tag,
-            paused=paused,
+        await rt.qbit.add_torrent(torrent=torrent, magnet=magnet, filename=_safe_filename(title), **common)
+    except QBittorrentInvalidTorrent as err:
+        if torrent is None or not rt.c411.is_own_url(url):
+            raise HomeAssistantError(str(err)) from err
+        _LOGGER.warning(
+            "qBittorrent refuse le fichier de « %s » (%s octets, début %r) ; nouvel essai avec le lien",
+            title, len(torrent), torrent[:40],
         )
+        try:
+            await rt.qbit.add_torrent(magnet=rt.c411.download_link(url), **common)
+        except QBittorrentError as err2:
+            raise HomeAssistantError(str(err2)) from err2
     except QBittorrentError as err:
         raise HomeAssistantError(str(err)) from err
 
@@ -275,6 +296,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C411ConfigEntry) -> bool
         hass.config_entries.async_update_entry(entry, title=APP_NAME)
     if key := entry.options.get(CONF_TMDB_KEY):
         entry.runtime_data.tmdb = TmdbClient(hass, async_get_clientsession(hass), key)
+    entry.runtime_data.recommender = Recommender()
     await _async_setup_series(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await _async_register_panel(

@@ -2,9 +2,10 @@
 
 **TorrentManager** est une intégration personnalisée qui affiche le contenu de **C411** directement dans Home Assistant, envoie vos choix à **qBittorrent** en un clic, et suit vos séries **Plex** pour récupérer les nouveaux épisodes dès leur sortie.
 
-- **Panneau « TorrentManager »** dans la barre latérale avec quatre onglets :
+- **Panneau « TorrentManager »** dans la barre latérale avec cinq onglets :
   - **Nouveautés** : derniers ajouts, filtrables par catégorie (Films, Séries, Animation…) et triables par date, sources, taille ou popularité.
   - **Recherche** : recherche plein texte sur C411, avec filtres et bouton « Afficher plus ».
+  - **Pour vous** : recommandations d'après vos téléchargements et vos séries Plex (TMDB), et ce qui est populaire en ce moment sur C411.
   - **Séries** : vos séries Plex avec leur affiche, le dernier épisode possédé, les nouveaux épisodes trouvés sur C411 et des interrupteurs « Suivre » / « Auto ».
   - **Téléchargements** : progression en direct, vitesse, temps restant, pause / reprise / revérification / suppression (avec ou sans fichiers).
 - **Une seule carte par contenu** : les différentes versions d'un même film ou épisode sont regroupées, et la meilleure s'affiche selon vos préférences de qualité et de langue, puis selon sa réputation. Des filtres rapides (4K, 1080p, 720p ; VF/MULTi, VOSTFR) et un lien « +N versions » permettent de voir le reste.
@@ -196,6 +197,9 @@ content: >
 ```
 
 ## Dépannage
+
+- **« qBittorrent : fichier torrent invalide »** (avant la 1.3.0) : mettez à jour. TorrentManager vérifie désormais le fichier et, s'il le faut, confie le lien à qBittorrent. Si une erreur persiste, le journal de Home Assistant (Paramètres → Système → Journaux, filtre `c411`) indique ce que C411 a renvoyé.
+- **Pas d'affiches** : ajoutez une clé TMDB gratuite (Configurer → Affichage et accès).
 
 - **« Impossible de joindre qBittorrent »** : vérifiez que l'URL est joignable depuis la machine Home Assistant. Avec Docker, `localhost` désigne le conteneur lui-même, pas l'hôte.
 - **« Identifiants incorrects » alors qu'ils sont bons** : qBittorrent bannit temporairement l'adresse IP après plusieurs échecs de connexion. Attendez, ou ajoutez l'IP de Home Assistant à la liste blanche (Options → Interface web → « Contourner l'authentification pour les clients du sous-réseau »).

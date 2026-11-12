@@ -34,12 +34,20 @@ class C411AuthError(C411Error):
     """Clé API refusée."""
 
 
+class C411Refused(C411Error):
+    """C411 refuse explicitement le téléchargement (« failure reason »)."""
+
+
 class QBittorrentError(Exception):
     """Erreur générique qBittorrent."""
 
 
 class QBittorrentAuthError(QBittorrentError):
     """Identifiants qBittorrent refusés."""
+
+
+class QBittorrentInvalidTorrent(QBittorrentError):
+    """qBittorrent juge le fichier .torrent invalide (HTTP 415)."""
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +73,7 @@ class C411Release:
     freeleech: bool = False
     content_type: str = "other"
     info: dict[str, Any] = field(default_factory=dict)
+    poster: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Version sérialisable."""
@@ -76,6 +85,11 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _poster_attr(url: str | None) -> str | None:
+    """Image fournie par le flux C411 (attribut Torznab « coverurl »), si elle existe."""
+    return url if url and url.startswith("https://") else None
 
 
 def parse_torznab(xml_text: str) -> list[C411Release]:
@@ -153,9 +167,62 @@ def parse_torznab(xml_text: str) -> list[C411Release]:
                 freeleech=first("downloadvolumefactor") in {"0", "0.0"},
                 content_type=ctype,
                 info=release_info(title, ctype),
+                poster=_poster_attr(first("coverurl") or first("poster") or first("cover")),
             )
         )
     return releases
+
+
+# ---------------------------------------------------------------------------
+# Vérification des fichiers .torrent
+# ---------------------------------------------------------------------------
+def _bdecode(data: bytes, i: int = 0, depth: int = 0) -> tuple[Any, int]:
+    """Décodeur bencode minimal (suffisant pour valider un .torrent)."""
+    if depth > 50:
+        raise ValueError("structure trop profonde")
+    c = data[i:i + 1]
+    if c == b"i":
+        end = data.index(b"e", i)
+        return int(data[i + 1:end]), end + 1
+    if c == b"l":
+        i += 1
+        out = []
+        while data[i:i + 1] != b"e":
+            val, i = _bdecode(data, i, depth + 1)
+            out.append(val)
+        return out, i + 1
+    if c == b"d":
+        i += 1
+        out_d: dict[bytes, Any] = {}
+        while data[i:i + 1] != b"e":
+            key, i = _bdecode(data, i, depth + 1)
+            val, i = _bdecode(data, i, depth + 1)
+            out_d[key] = val
+        return out_d, i + 1
+    if c.isdigit():
+        colon = data.index(b":", i)
+        length = int(data[i:colon])
+        start = colon + 1
+        if start + length > len(data):
+            raise ValueError("chaîne tronquée")
+        return data[start:start + length], start + length
+    raise ValueError(f"octet inattendu à la position {i}")
+
+
+def check_torrent(data: bytes) -> None:
+    """Lève C411Error avec un message clair si `data` n'est pas un .torrent exploitable."""
+    try:
+        decoded, _ = _bdecode(data)
+    except (ValueError, IndexError) as err:
+        raise C411Error(f"Fichier .torrent illisible ({err})") from err
+    if not isinstance(decoded, dict):
+        raise C411Error("La réponse de C411 n'est pas un fichier .torrent")
+    if b"failure reason" in decoded:
+        reason = decoded[b"failure reason"]
+        reason = reason.decode("utf-8", "replace") if isinstance(reason, bytes) else str(reason)
+        raise C411Refused(f"C411 a refusé le téléchargement : {reason}")
+    if not isinstance(decoded.get(b"info"), dict):
+        raise C411Error("Le fichier reçu de C411 ne contient pas de torrent (section « info » absente)")
 
 
 class C411Client:
@@ -199,14 +266,27 @@ class C411Client:
         categories: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
+        *,
+        tmdbid: str | int | None = None,
+        imdbid: str | None = None,
+        media: str | None = None,
     ) -> list[C411Release]:
-        """Recherche (ou derniers ajouts si `query` est vide)."""
+        """Recherche (ou derniers ajouts si `query` est vide).
+
+        Avec `tmdbid` / `imdbid`, recherche précise d'un film (`media="movie"`) ou d'une série (`"tv"`).
+        """
         params: dict[str, Any] = {
             "apikey": self._api_key,
             "t": "search",
             "q": query.strip(),
             "limit": max(1, min(int(limit), 100)),
         }
+        if tmdbid or imdbid:
+            params["t"] = "tvsearch" if media == "tv" else "movie"
+            if tmdbid:
+                params["tmdbid"] = str(tmdbid)
+            if imdbid:
+                params["imdbid"] = str(imdbid).removeprefix("tt")
         if offset:
             params["offset"] = int(offset)
         if categories:
@@ -239,6 +319,12 @@ class C411Client:
             query["apikey"] = self._api_key
             return urlunparse(parsed._replace(query=urlencode(query)))
         return url
+
+    def download_link(self, url: str) -> str:
+        """Lien de téléchargement complet (avec la clé API), pour qBittorrent."""
+        if not self.is_own_url(url):
+            raise C411Error("Lien de téléchargement refusé : il ne pointe pas vers C411")
+        return self._with_apikey(url)
 
     async def fetch_torrent(self, url: str) -> tuple[bytes | None, str | None]:
         """Télécharge un .torrent. Renvoie (contenu, None) ou (None, lien magnet)."""
@@ -276,10 +362,12 @@ class C411Client:
                 raise C411Error("Fichier .torrent anormalement volumineux")
             if not data.startswith(b"d"):
                 # Un .torrent est un dictionnaire bencodé : il commence par « d ».
-                snippet = data[:200].decode("utf-8", "replace")
+                snippet = data[:300].decode("utf-8", "replace")
+                _LOGGER.debug("Réponse inattendue de C411 (%s) : %r", resp.headers.get("Content-Type"), snippet)
                 if "<error" in snippet:
                     parse_torznab(snippet)  # lève l'erreur détaillée
                 raise C411Error("La réponse de C411 n'est pas un fichier .torrent")
+            check_torrent(data)
             return data, None
         raise C411Error("Trop de redirections")
 
@@ -390,7 +478,9 @@ class QBittorrentClient:
                 if resp.status in (401, 403):
                     raise QBittorrentAuthError("Accès refusé par qBittorrent")
                 if resp.status == 415:
-                    raise QBittorrentError("qBittorrent : fichier torrent invalide")
+                    raise QBittorrentInvalidTorrent("qBittorrent : fichier torrent invalide")
+                if resp.status == 409:
+                    raise QBittorrentError("qBittorrent : ce torrent est déjà présent")
                 if resp.status >= 400:
                     raise QBittorrentError(
                         f"qBittorrent ({path}) : HTTP {resp.status} {await resp.text()}"

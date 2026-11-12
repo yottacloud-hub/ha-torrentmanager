@@ -126,3 +126,43 @@ async def test_display_and_access(
     user_ws = await hass_ws_client(hass, hass_read_only_access_token)
     await user_ws.send_json({"id": 1, "type": "c411/config"})
     assert (await user_ws.receive_json())["error"]["code"] == "unauthorized"
+
+
+async def test_recommendations(hass: HomeAssistant, servers, hass_ws_client, monkeypatch) -> None:
+    monkeypatch.setattr(const, "TMDB_API", f"{servers['tmdb_base']}/3")
+    entry = await _setup(hass, servers)
+    ws = await hass_ws_client(hass)
+
+    # Sans clé TMDB : non configuré
+    await ws.send_json({"id": 1, "type": "c411/recommendations"})
+    assert (await ws.receive_json())["result"]["configured"] is False
+
+    await _options(hass, entry, "display", {
+        "hide_adult": True, "best_only": True, "pref_quality": "1080p", "pref_language": "vf",
+        "tmdb_api_key": TMDB_KEY, "user_access": "download",
+    })
+    ws = await hass_ws_client(hass)
+    await ws.send_json({"id": 2, "type": "c411/recommendations"})
+    msg = await ws.receive_json()
+    assert msg["success"], msg
+    res = msg["result"]
+    assert [s["title"] for s in res["seeds"]] == ["Dune : Deuxième partie"]
+    titles = [i["title"] for i in res["items"]]
+    assert titles[:3] == ["Dune", "Blade Runner 2049", "Oppenheimer"]
+    assert "Dune : Deuxième partie" not in titles  # déjà téléchargé
+    assert res["items"][0]["because"] == ["Dune : Deuxième partie"] and res["items"][0]["poster"].endswith("/dune1.jpg")
+
+    # Cache : pas de nouvel appel TMDB
+    n = len(servers["tmdb_calls"])
+    await ws.send_json({"id": 3, "type": "c411/recommendations"})
+    assert (await ws.receive_json())["success"] and len(servers["tmdb_calls"]) == n
+
+    # Recherche C411 par identifiant TMDB, puis repli sur le titre
+    await ws.send_json({"id": 4, "type": "c411/search", "query": "Dune Part Two", "tmdbid": 693134, "media": "movie"})
+    msg = await ws.receive_json()
+    assert [r["title"] for r in msg["result"]["results"]] == [ITEMS[0]["title"]]
+    assert servers["c411_calls"][-1]["t"] == "movie" and servers["c411_calls"][-1]["tmdbid"] == "693134"
+    await ws.send_json({"id": 5, "type": "c411/search", "query": "shogun", "tmdbid": 999, "media": "tv"})
+    msg = await ws.receive_json()
+    assert [r["title"] for r in msg["result"]["results"]] == [ITEMS[1]["title"]]
+    assert servers["c411_calls"][-2]["t"] == "tvsearch" and servers["c411_calls"][-1]["q"] == "shogun"

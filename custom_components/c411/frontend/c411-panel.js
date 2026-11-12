@@ -118,6 +118,7 @@ class C411Panel extends HTMLElement {
       view: { best: true, q: "all", l: "all" }, viewLoaded: false,
       expanded: new Set(), art: {}, artAsked: new Set(),
       perms: { view: true, download: true, manage: true },
+      recs: null, recsLoading: false, recsError: null, byId: null,
     };
     this._built = false;
   }
@@ -190,7 +191,12 @@ class C411Panel extends HTMLElement {
     if (!append) { s.offset = 0; s.lastQuery = q; }
     s.searchLoading = true; s.searchError = null; this._renderResults();
     try {
-      const r = await this._ws({ type: "c411/search", query: s.lastQuery, categories: [...s.cats], limit: 50, offset: s.offset });
+      const msg = { type: "c411/search", query: s.lastQuery, categories: [...s.cats], limit: 50, offset: s.offset };
+      if (s.byId) {
+        msg.tmdbid = s.byId.id; msg.media = s.byId.media; msg.categories = [];
+        msg.query = s.byId.original_title || s.byId.title;
+      }
+      const r = await this._ws(msg);
       const items = r.results || [];
       s.results = append ? [...(s.results || []), ...items] : items;
       const raw = r.raw_count ?? items.length;
@@ -253,6 +259,7 @@ class C411Panel extends HTMLElement {
       <nav class="tabs" id="tabs">
         <button data-tab="latest" class="active"><ha-icon icon="mdi:new-box"></ha-icon><span>Nouveautés</span></button>
         <button data-tab="search"><ha-icon icon="mdi:magnify"></ha-icon><span>Recherche</span></button>
+        <button data-tab="foryou"><ha-icon icon="mdi:star-shooting-outline"></ha-icon><span>Pour vous</span></button>
         <button data-tab="series"><ha-icon icon="mdi:television-play"></ha-icon><span>Séries</span><b id="sercount"></b></button>
         <button data-tab="downloads"><ha-icon icon="mdi:download"></ha-icon><span>Téléchargements</span><b id="dlcount"></b></button>
       </nav>
@@ -289,6 +296,9 @@ class C411Panel extends HTMLElement {
           </div>
           <div id="list-search" class="list"></div>
         </section>
+        <section id="pane-foryou" hidden>
+          <div id="list-foryou"></div>
+        </section>
         <section id="pane-series" hidden>
           <div class="controls">
             <div class="row">
@@ -323,7 +333,7 @@ class C411Panel extends HTMLElement {
     this._menu = menu;
 
     root.addEventListener("click", (ev) => this._onClick(ev));
-    root.getElementById("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); this._search(false); });
+    root.getElementById("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); this._s.byId = null; this._search(false); });
     root.getElementById("series-q").addEventListener("input", (ev) => { this._s.seriesQuery = ev.target.value; this._renderSeries(); });
     for (const id of ["sort-latest", "sort-search"]) {
       root.getElementById(id).addEventListener("change", (ev) => {
@@ -370,6 +380,21 @@ class C411Panel extends HTMLElement {
       return;
     }
     if (a === "goto-downloads") return this._setTab("downloads");
+    if (a === "recs-refresh") return this._loadRecs(true);
+    if (a === "rec-find") {
+      const rec = (s.recs?.items || [])[Number(el.dataset.idx)];
+      if (!rec) return;
+      s.byId = rec;
+      this._setTab("search");
+      this.shadowRoot.getElementById("q").value = rec.title + (rec.year ? ` (${rec.year})` : "");
+      this._search(false);
+      return;
+    }
+    if (a === "close-hint") {
+      try { window.localStorage.setItem("c411-hint-tmdb", "1"); } catch (e) { /* ignoré */ }
+      this._renderLatest(); this._renderResults();
+      return;
+    }
     if (a === "versions") {
       const g = el.dataset.group;
       s.expanded.has(g) ? s.expanded.delete(g) : s.expanded.add(g);
@@ -390,7 +415,8 @@ class C411Panel extends HTMLElement {
     this._s.tab = tab;
     const root = this.shadowRoot;
     root.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-    for (const p of ["latest", "search", "series", "downloads"]) root.getElementById(`pane-${p}`).hidden = p !== tab;
+    for (const p of ["latest", "search", "foryou", "series", "downloads"]) root.getElementById(`pane-${p}`).hidden = p !== tab;
+    if (tab === "foryou") { this._renderForYou(); if (!this._s.recs) this._loadRecs(false); }
     if (tab === "series") { this._renderSeries(); this._loadSeries(); }
     if (tab === "search") setTimeout(() => root.getElementById("q").focus(), 50);
     if (tab === "downloads") { this._renderDownloads(); this._loadTorrents(); }
@@ -582,7 +608,9 @@ class C411Panel extends HTMLElement {
   }
 
   _groupHtml(g, list, byHash) {
-    const r = g.best, art = this._s.art[g.group];
+    const r = g.best;
+    const fallback = g.versions.find((v) => v.poster)?.poster;
+    const art = this._s.art[g.group] || (fallback ? { poster: fallback } : null);
     const others = g.versions.length - 1;
     const open = this._s.expanded.has(g.group);
     const visual = art?.poster
@@ -635,7 +663,21 @@ class C411Panel extends HTMLElement {
     const byHash = this._torrentByHash();
     const groups = this._sortedGroups(this._groups(items));
     this._askArtwork(groups);
-    return { html: groups.map((g) => this._groupHtml(g, list, byHash)).join(""), count: groups.length };
+    return { html: this._posterHint() + groups.map((g) => this._groupHtml(g, list, byHash)).join(""), count: groups.length };
+  }
+
+  _posterHint() {
+    const s = this._s;
+    if (!s.config || s.config.tmdb || !s.perms.manage || this._hintClosed()) return "";
+    return `<div class="notice info"><ha-icon icon="mdi:image-outline"></ha-icon>
+      <span>Pour afficher les affiches des films et séries, ajoutez une clé TMDB gratuite :
+      <b>Paramètres → Appareils et services → TorrentManager → Configurer → Affichage et accès</b>.
+      Sans clé, seules vos séries Plex ont une affiche.</span>
+      <button class="ghost sm" data-action="close-hint" title="Masquer"><ha-icon icon="mdi:close"></ha-icon></button></div>`;
+  }
+
+  _hintClosed() {
+    try { return window.localStorage.getItem("c411-hint-tmdb") === "1"; } catch (e) { return false; }
   }
 
   _renderLatest() {
@@ -848,6 +890,63 @@ class C411Panel extends HTMLElement {
     </article>`;
   }
 
+  // ---------------------------------------------------------------- pour vous
+  async _loadRecs(refresh) {
+    const s = this._s;
+    s.recsLoading = true; this._renderForYou();
+    try { s.recs = await this._ws({ type: "c411/recommendations", refresh }); s.recsError = null; }
+    catch (e) { s.recsError = this._msg(e); }
+    s.recsLoading = false; this._renderForYou();
+  }
+
+  _renderForYou() {
+    const el = this.shadowRoot.getElementById("list-foryou"); if (!el) return;
+    const s = this._s;
+    let html = `<div class="row section-head"><h2>Recommandé pour vous</h2><span class="grow"></span>
+      <button class="btn outline sm" data-action="recs-refresh" ${s.recsLoading ? "disabled" : ""}>
+        ${s.recsLoading ? '<span class="spin"></span>' : '<ha-icon icon="mdi:refresh"></ha-icon>'}Actualiser</button></div>`;
+    if (s.recsError) html += `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.recsError)}</div>`;
+    else if (!s.recs) html += `<div class="recgrid">${Array.from({ length: 8 }, () => '<div class="card skel rec-skel"></div>').join("")}</div>`;
+    else if (!s.recs.configured) {
+      html += `<div class="notice info"><ha-icon icon="mdi:star-shooting-outline"></ha-icon><span>${s.perms.manage
+        ? `Les recommandations utilisent TMDB. Ajoutez une clé gratuite dans <b>Paramètres → Appareils et services → TorrentManager → Configurer → Affichage et accès</b>.`
+        : "Les recommandations ne sont pas encore activées par l'administrateur."}</span></div>`;
+    } else if (!s.recs.items.length) {
+      html += empty("mdi:movie-open-star-outline", s.recs.seeds.length
+        ? "Pas de recommandation pour l'instant."
+        : "Téléchargez quelques films ou séries depuis TorrentManager (ou suivez des séries Plex) : les recommandations apparaîtront ici.");
+    } else {
+      const seeds = s.recs.seeds.map((x) => x.title);
+      html += `<div class="hint">D'après ${seeds.slice(0, 6).map(esc).join(", ")}${seeds.length > 6 ? ` et ${seeds.length - 6} autre${seeds.length - 6 > 1 ? "s" : ""}` : ""}.</div>`;
+      html += `<div class="recgrid">${s.recs.items.map((r, i) => this._recHtml(r, i)).join("")}</div>`;
+    }
+    // Populaire en ce moment (sans clé TMDB aussi)
+    const pop = this._groups(s.latest.filter((r) => ["movies", "series", "anime"].includes(r.content_type)))
+      .sort((a, b) => (b.best.grabs || 0) - (a.best.grabs || 0)).slice(0, 8);
+    if (pop.length) {
+      this._askArtwork(pop);
+      const byHash = this._torrentByHash();
+      html += `<div class="row section-head"><h2>Populaire en ce moment sur C411</h2></div>
+        <div class="list">${pop.map((g) => this._groupHtml(g, "latest", byHash)).join("")}</div>`;
+    }
+    el.innerHTML = html;
+  }
+
+  _recHtml(r, i) {
+    const kind = r.media === "tv" ? "Série" : "Film";
+    return `<article class="card rec">
+      <div class="rposter">${r.poster ? `<img loading="lazy" src="${esc(r.poster)}" alt="">` : `<div class="noposter"><ha-icon icon="${r.media === "tv" ? "mdi:television-classic" : "mdi:movie-open"}"></ha-icon></div>`}
+        <span class="kind">${kind}</span></div>
+      <div class="rbody">
+        <div class="t">${esc(r.title)}</div>
+        <div class="meta">${r.year ? `<span>${r.year}</span>` : ""}${r.vote ? `<span class="vote"><ha-icon icon="mdi:star"></ha-icon>${nf1.format(r.vote)}</span>` : ""}</div>
+        ${r.overview ? `<p class="ov">${esc(r.overview)}</p>` : ""}
+        <div class="because">Parce que vous avez : ${r.because.map(esc).join(", ")}</div>
+        <button class="btn primary sm" data-action="rec-find" data-idx="${i}"><ha-icon icon="mdi:magnify"></ha-icon>Trouver sur C411</button>
+      </div>
+    </article>`;
+  }
+
   _toast(text, error = false) {
     const el = this.shadowRoot.getElementById("toast"); if (!el) return;
     el.textContent = text;
@@ -967,6 +1066,9 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
 .state.err { color: var(--c-err); } .state.wait { color: var(--c-warn); }
 .confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; flex-wrap: wrap; justify-content: flex-end; }
 .notice { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-radius: var(--radius); font-size: 14px; }
+.notice.info { background: color-mix(in srgb, var(--c-accent) 10%, transparent); color: var(--primary-text-color); font-size: 13px; }
+.notice.info > span { flex: 1; }
+.notice.info > ha-icon { color: var(--c-accent); }
 .notice.err { background: color-mix(in srgb, var(--c-err) 12%, transparent); color: var(--c-err); }
 .empty { text-align: center; color: var(--c-sub); padding: 56px 16px; }
 .empty ha-icon { --mdc-icon-size: 56px; opacity: .5; }
@@ -983,6 +1085,23 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
   border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); font-size: 14px; }
 .toast.err { background: var(--c-err); color: #fff; }
 [hidden] { display: none !important; }
+.section-head { margin: 4px 0 10px; }
+.section-head h2 { font-size: 18px; font-weight: 500; margin: 0; }
+#list-foryou .list { margin-bottom: 16px; }
+.recgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); gap: 12px; margin: 8px 0 24px; }
+.rec { display: flex; flex-direction: column; overflow: hidden; }
+.rposter { position: relative; aspect-ratio: 2/3; background: var(--secondary-background-color, rgba(0,0,0,.06)); }
+.rposter img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rposter .noposter ha-icon { --mdc-icon-size: 48px; }
+.rposter .kind { position: absolute; top: 8px; left: 8px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: rgba(0,0,0,.65); color: #fff; }
+.rbody { padding: 10px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.rbody .meta { margin-top: 0; }
+.rbody .vote { margin-left: 0; }
+.ov { margin: 0; font-size: 12.5px; color: var(--c-sub); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.because { font-size: 11.5px; color: var(--c-sub); font-style: italic; margin-top: auto; }
+.rbody .btn { align-self: stretch; }
+.rec-skel { aspect-ratio: 2/3.6; }
 .view-options { gap: 8px; font-size: 13px; }
 .vlabel { color: var(--c-sub); }
 .seg { display: inline-flex; border: 1px solid var(--c-div); border-radius: 999px; overflow: hidden; background: var(--c-card); }
@@ -1062,6 +1181,8 @@ button[disabled] { opacity: .6; cursor: default; }
   .eps li .tags { display: none; }
   .filter { flex: 1; min-width: 0; }
   .versions .vt { display: none; }
+  .recgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .ov { -webkit-line-clamp: 2; }
   .vlabel { display: none; }
 }
 `;

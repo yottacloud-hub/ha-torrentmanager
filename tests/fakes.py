@@ -5,12 +5,15 @@ from __future__ import annotations
 from aiohttp import web
 
 API_KEY = "secret-key"
-TORRENT = b"d8:announce30:https://tracker.c411.org/announce4:infod4:name4:test6:lengthi1ee"
+_ANN = b"https://tracker.c411.org/announce"
+TORRENT = (b"d8:announce" + str(len(_ANN)).encode() + b":" + _ANN
+           + b"4:infod6:lengthi1e4:name4:test12:piece lengthi16384e6:pieces20:" + b"x" * 20 + b"ee")
+FAILURE = b"d14:failure reason26:Torrent introuvable (404).e"
 
 ITEMS = [
     {"id": "1001", "title": "Dune.Part.Two.2024.MULTi.2160p.WEB-DL.DV.HDR.H265-GRP", "date": "Wed, 11 Nov 2026 20:15:00 +0000",
      "size": 21474836480, "cats": ["2000", "2030"], "seeders": 154, "peers": 12, "grabs": 890,
-     "infohash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "imdbid": "tt15239678", "free": True},
+     "infohash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "imdbid": "tt15239678", "tmdbid": "693134", "free": True},
     {"id": "1002", "title": "Shogun.S02E03.FRENCH.1080p.WEB.H264-GRP", "date": "Thu, 12 Nov 2026 08:00:00 +0000",
      "size": 2147483648, "cats": ["5000"], "seeders": 40, "peers": 3, "grabs": 120,
      "infohash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
@@ -55,11 +58,18 @@ def make_c411_app(state: dict) -> web.Application:
                 raise web.HTTPFound(f"{state['base']}/api/torznab?t=get&id=1001&apikey={API_KEY}")
             if request.query.get("id") == "magnet":
                 raise web.HTTPFound("magnet:?xt=urn:btih:cccc")
+            if request.query.get("id") == "failure":
+                return web.Response(body=FAILURE, content_type="application/x-bittorrent")
+            if request.query.get("id") == "noinfo":
+                return web.Response(body=b"d4:junk3:abce", content_type="application/x-bittorrent")
             return web.Response(body=TORRENT, content_type="application/x-bittorrent")
         items = state.get("items", ITEMS)
         q = request.query.get("q", "")
         cats = [c for c in request.query.get("cat", "").split(",") if c]
-        found = [it for it in items if _matches(it, q, cats)]
+        if request.query.get("tmdbid"):
+            found = [it for it in items if it.get("tmdbid") == request.query["tmdbid"]]
+        else:
+            found = [it for it in items if _matches(it, q, cats)]
         return web.Response(text=render(found, state["base"]), content_type="application/rss+xml")
 
     app = web.Application()
@@ -69,7 +79,7 @@ def make_c411_app(state: dict) -> web.Application:
 
 def make_qbit_app(state: dict, *, v5: bool = True) -> web.Application:
     state.setdefault("torrents", [
-        {"hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "name": "Dune.Part.Two", "size": 100,
+        {"hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "name": "Dune.Part.Two.2024.MULTi.2160p.WEB-DL", "size": 100,
          "progress": 0.5, "dlspeed": 1000, "upspeed": 10, "eta": 50, "state": "downloading",
          "category": "films", "tags": "c411", "added_on": 1, "completion_on": 0, "num_seeds": 5,
          "num_leechs": 1, "ratio": 0.1, "save_path": "/dl", "amount_left": 50},
@@ -121,6 +131,8 @@ def make_qbit_app(state: dict, *, v5: bool = True) -> web.Application:
                 fields[part.name] = {"filename": part.filename, "data": await part.read()}
             else:
                 fields[part.name] = (await part.read()).decode()
+        if "torrents" in fields and state.get("qb_reject_files"):
+            return web.Response(status=415, text="Torrent file is not valid")
         state["added"].append(fields)
         return web.Response(text="Ok.")
 
@@ -240,8 +252,23 @@ def make_tmdb_app(state: dict) -> web.Application:
             return web.json_response({"movie_results": [movies["693134"]], "tv_results": []})
         return web.json_response({"movie_results": [], "tv_results": []})
 
+    recs = {
+        ("movie", "693134"): [
+            {"id": 438631, "title": "Dune", "release_date": "2021-09-15", "poster_path": "/dune1.jpg", "vote_average": 7.8},
+            {"id": 335984, "title": "Blade Runner 2049", "release_date": "2017-10-04", "poster_path": "/br.jpg", "vote_average": 7.6},
+            {"id": 872585, "title": "Oppenheimer", "release_date": "2023-07-19", "poster_path": "/opp.jpg", "vote_average": 8.1},
+            {"id": 693134, "title": "Dune : Deuxième partie", "release_date": "2024-02-28", "poster_path": "/dune.jpg", "vote_average": 8.2},
+        ],
+    }
+
+    async def recommendations(request):
+        media = "movie" if request.path.startswith("/3/movie") else "tv"
+        return web.json_response({"results": recs.get((media, request.match_info["id"]), [])})
+
     async def search_movie(request):
         q = request.query.get("query", "")
+        if "dune part two" in q:
+            return web.json_response({"results": [movies["693134"]]})
         if "oppenheimer" in q:
             return web.json_response({"results": [{"id": 872585, "title": "Oppenheimer", "release_date": "2023-07-19",
                                                    "poster_path": "/opp.jpg", "vote_average": 8.1}]})
@@ -250,6 +277,8 @@ def make_tmdb_app(state: dict) -> web.Application:
     app = web.Application(middlewares=[auth])
     app.router.add_get("/3/configuration", configuration)
     app.router.add_get("/3/movie/{id}", movie)
+    app.router.add_get("/3/movie/{id}/recommendations", recommendations)
+    app.router.add_get("/3/tv/{id}/recommendations", recommendations)
     app.router.add_get("/3/tv/{id}", show)
     app.router.add_get("/3/find/{imdb}", find)
     app.router.add_get("/3/search/movie", search_movie)

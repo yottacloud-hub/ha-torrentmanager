@@ -53,6 +53,7 @@ class C411RuntimeData:
     downloads: QBittorrentCoordinator
     series: Any = None  # SeriesCoordinator quand Plex est configuré
     tmdb: Any = None  # TmdbClient quand une clé TMDB est configurée
+    recommender: Any = None
 
 
 class C411FeedCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
