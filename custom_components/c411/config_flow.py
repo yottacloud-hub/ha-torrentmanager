@@ -70,6 +70,8 @@ from .const import (
     CONF_SERIES_LANGUAGES,
     CONF_SERIES_MAX_GRABS,
     CONF_SERIES_MIN_SEEDERS,
+    CONF_SERIES_NEXT_SEASONS,
+    CONF_SERIES_NOTIFY_SERVICE,
     CONF_SERIES_NOTIFY,
     CONF_SERIES_PACKS,
     CONF_SERIES_QUALITIES,
@@ -413,7 +415,7 @@ class C411OptionsFlow(OptionsFlow):
         if not (opts.get(CONF_PLEX_URL) and opts.get(CONF_PLEX_TOKEN)):
             return self.async_abort(reason="plex_required")
         if user_input is not None:
-            return self._save(user_input, blank=(CONF_SERIES_EXCLUDE,))
+            return self._save(user_input, blank=(CONF_SERIES_EXCLUDE, CONF_SERIES_NOTIFY_SERVICE))
 
         sections: list[SelectOptionDict] = []
         rt = getattr(self.config_entry, "runtime_data", None)
@@ -427,6 +429,10 @@ class C411OptionsFlow(OptionsFlow):
                 sections = []
         q_options = [SelectOptionDict(value=k, label=v) for k, v in QUALITIES.items()]
         l_options = [SelectOptionDict(value=k, label=v) for k, v in LANGUAGE_GROUPS.items()]
+        notify_services = sorted(
+            f"notify.{name}" for name in self.hass.services.async_services_for_domain("notify")
+            if name not in ("send_message", "persistent_notification")
+        )
 
         def box(min_: int, max_: int, unit: str | None = None) -> NumberSelector:
             cfg = NumberSelectorConfig(min=min_, max=max_, step=1, mode=NumberSelectorMode.BOX)
@@ -457,10 +463,17 @@ class C411OptionsFlow(OptionsFlow):
                     description={"suggested_value": opts.get(CONF_SERIES_EXCLUDE, DEFAULT_SERIES_EXCLUDE)},
                 ): str,
                 vol.Required(CONF_SERIES_PACKS, default=opts.get(CONF_SERIES_PACKS, True)): BooleanSelector(),
+                vol.Required(CONF_SERIES_NEXT_SEASONS, default=opts.get(CONF_SERIES_NEXT_SEASONS, True)): BooleanSelector(),
                 vol.Required(CONF_SERIES_MAX_GRABS, default=opts.get(CONF_SERIES_MAX_GRABS, DEFAULT_SERIES_MAX_GRABS)): box(1, 50),
                 vol.Required(CONF_SERIES_INTERVAL, default=opts.get(CONF_SERIES_INTERVAL, DEFAULT_SERIES_INTERVAL)): box(10, 720, "min"),
                 vol.Required(CONF_PLEX_INTERVAL, default=opts.get(CONF_PLEX_INTERVAL, DEFAULT_PLEX_INTERVAL)): box(10, 1440, "min"),
                 vol.Required(CONF_SERIES_NOTIFY, default=opts.get(CONF_SERIES_NOTIFY, True)): BooleanSelector(),
+                vol.Optional(
+                    CONF_SERIES_NOTIFY_SERVICE,
+                    description={"suggested_value": opts.get(CONF_SERIES_NOTIFY_SERVICE)},
+                ): SelectSelector(
+                    SelectSelectorConfig(options=notify_services, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
+                ),
             }
         )
         return self.async_show_form(step_id="series", data_schema=schema)

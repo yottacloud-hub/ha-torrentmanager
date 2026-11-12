@@ -270,6 +270,7 @@ class C411Client:
         tmdbid: str | int | None = None,
         imdbid: str | None = None,
         media: str | None = None,
+        season: int | None = None,
     ) -> list[C411Release]:
         """Recherche (ou derniers ajouts si `query` est vide).
 
@@ -287,6 +288,9 @@ class C411Client:
                 params["tmdbid"] = str(tmdbid)
             if imdbid:
                 params["imdbid"] = str(imdbid).removeprefix("tt")
+        if season is not None:
+            params["t"] = "tvsearch"
+            params["season"] = int(season)
         if offset:
             params["offset"] = int(offset)
         if categories:

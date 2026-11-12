@@ -110,7 +110,7 @@
       },
       "series": {
         "title": "TV show tracking",
-        "description": "For each Plex show, the integration looks on C411 for episodes after the latest one in Plex.",
+        "description": "For each Plex show, the integration looks on C411 for episodes and seasons after the latest one in Plex. A notification is sent for each new season found.",
         "data": {
           "series_enabled": "Enable TV show tracking",
           "series_auto": "Automatically download new episodes",
@@ -125,7 +125,9 @@
           "series_max_grabs": "Max automatic downloads per check",
           "series_interval": "C411 check interval",
           "plex_interval": "Plex library reload interval",
-          "series_notify": "Home Assistant notification for each episode sent"
+          "series_notify": "Notifications (new season, episode sent)",
+          "series_next_seasons": "Catch up on all missing later seasons (otherwise: current and next season only)",
+          "series_notify_service": "Also send notifications to this service (e.g. notify.mobile_app_my_phone)"
         }
       },
       "display": {

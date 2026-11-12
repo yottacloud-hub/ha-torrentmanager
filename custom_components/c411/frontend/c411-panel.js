@@ -880,7 +880,8 @@ class C411Panel extends HTMLElement {
         <div class="t">${esc(x.title)}${x.year ? ` <span class="muted">(${x.year})</span>` : ""}</div>
         <div class="meta"><span>${x.last ? `Dernier : <b>${esc(x.last)}</b>` : "Aucun épisode"}</span>
           <span>${x.episode_count} ép. · ${x.season_count} saison${x.season_count > 1 ? "s" : ""}</span></div>
-        <div class="row tight">${x.follow ? statusPill : `<span class="pill2">Non suivie</span>`}</div>
+        <div class="row tight">${x.follow ? statusPill : `<span class="pill2">Non suivie</span>`}
+          ${(x.new_seasons || []).map((n) => `<span class="pill2 season"><ha-icon icon="mdi:party-popper"></ha-icon>Saison ${n}</span>`).join("")}</div>
         <div class="switches">
           <label class="sw ${s.perms.manage ? "" : "dis"}"><input type="checkbox" data-pref="follow" data-key="${k}" ${x.follow ? "checked" : ""} ${s.perms.manage ? "" : "disabled"}><span></span>Suivre</label>
           <label class="sw ${x.follow && s.perms.manage ? "" : "dis"}" title="Télécharger automatiquement les nouveaux épisodes"><input type="checkbox" data-pref="auto" data-key="${k}" ${x.auto ? "checked" : ""} ${x.follow && s.perms.manage ? "" : "disabled"}><span></span>Auto</label>
@@ -1151,6 +1152,7 @@ select, input[type=search] { font: inherit; color: var(--primary-text-color); ba
 .pill2 ha-icon { --mdc-icon-size: 14px; }
 .pill2.new { background: color-mix(in srgb, var(--c-accent) 16%, transparent); color: var(--c-accent); }
 .pill2.dl { background: color-mix(in srgb, var(--c-warn) 18%, transparent); color: var(--c-warn); }
+.pill2.season { background: color-mix(in srgb, #9c27b0 16%, transparent); color: #9c27b0; }
 .pill2.ok { background: color-mix(in srgb, var(--c-ok) 15%, transparent); color: var(--c-ok); }
 .switches { display: flex; align-items: center; gap: 14px; font-size: 13px; }
 .sw { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }

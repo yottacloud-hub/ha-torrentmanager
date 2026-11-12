@@ -101,7 +101,9 @@ Dans le panneau, la destination « Automatique (selon le type) » est choisie pa
 | Packs de saison | Acceptés pour une saison entièrement absente de Plex |
 | Téléchargements auto max. par vérification | 5 (garde-fou) |
 | Vérification C411 / relecture Plex | 30 min / 60 min |
-| Notification à chaque épisode envoyé | Activée |
+| Rattraper toutes les saisons suivantes manquantes | Activé |
+| Notifications (nouvelle saison, épisode envoyé) | Activées |
+| Service de notification du téléphone | Aucun (ex. `notify.mobile_app_mon_telephone`) |
 
 > **Limite C411** : l'API accepte environ 15 requêtes par minute. L'intégration espace automatiquement ses appels (environ 4 s entre deux requêtes). Une recherche peut donc mettre quelques secondes à répondre si vous enchaînez les clics.
 
@@ -112,6 +114,8 @@ Dans le panneau, la destination « Automatique (selon le type) » est choisie pa
 3. Une release est retenue si elle correspond à la série (identifiant TMDb/IMDb, sinon nom et année), si l'épisode vient **après** le dernier présent dans Plex, et si elle respecte vos règles. À épisode égal, la meilleure release gagne : qualité préférée, langue, MULTi, PROPER/REPACK, nombre de sources.
 4. Si la série est suivie avec « Auto », l'épisode part dans qBittorrent, dans le dossier « Séries » (ou « Animation »). Il est mémorisé comme récupéré et n'est plus téléchargé une seconde fois.
 5. Quand le téléchargement se termine, Plex est rescanné ; l'épisode apparaît dans Plex et devient le nouveau « dernier épisode ».
+
+**Saisons suivantes** : si vous n'avez que la saison 1, les saisons 2, 3… sont recherchées (par nom, par identifiant de la série, puis saison par saison) et téléchargées, en privilégiant les packs de saison complets. À chaque nouvelle saison trouvée, vous recevez **une** notification (« téléchargement lancé » ou « à télécharger »), dans Home Assistant et, si vous le choisissez dans les options, sur votre téléphone (`notify.mobile_app_…`). L'option « Rattraper toutes les saisons suivantes manquantes » peut être désactivée pour ne prendre que la saison en cours et la suivante.
 
 Les épisodes manquants **avant** le dernier épisode possédé ne sont pas recherchés : c'est voulu, pour ne pas retélécharger ce que vous avez supprimé exprès. Le bouton ↺ à côté d'un épisode récupéré permet de l'oublier pour le retélécharger.
 
@@ -146,6 +150,7 @@ Les noms exacts des entités peuvent varier selon la langue de votre installatio
 - `c411_download_completed` : un torrent vient de terminer (`name`, `size`, `save_path`, `from_c411`).
 - `c411_new_releases` : de nouvelles releases sont apparues dans le flux suivi (`count`, `releases`).
 - `c411_episode_grabbed` : un épisode a été envoyé à qBittorrent (`show`, `episode`, `title`, `automatic`).
+- `c411_new_season` : une nouvelle saison d'une série suivie est disponible (`show`, `season`, `downloading`).
 
 ## Exemples
 

@@ -70,6 +70,9 @@ def make_c411_app(state: dict) -> web.Application:
             found = [it for it in items if it.get("tmdbid") == request.query["tmdbid"]]
         else:
             found = [it for it in items if _matches(it, q, cats)]
+        if request.query.get("season"):
+            tag = f"S{int(request.query['season']):02d}"
+            found = [it for it in found if tag in it["title"].upper()]
         return web.Response(text=render(found, state["base"]), content_type="application/rss+xml")
 
     app = web.Application()

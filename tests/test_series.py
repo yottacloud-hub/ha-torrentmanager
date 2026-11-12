@@ -188,3 +188,92 @@ async def test_series_tracking(hass: HomeAssistant, servers, hass_ws_client, has
     assert [g["code"] for g in shows["100"]["grabbed"]] == ["S02E04"]
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+async def test_next_seasons(hass: HomeAssistant, servers, hass_ws_client) -> None:
+    """Série dont on n'a que la saison 1 : saisons suivantes téléchargées, une notification par saison."""
+    servers["plex_shows"] = {
+        "103": {"title": "Dark", "year": 2017, "guids": ["tmdb://70523"], "owned": [(1, e) for e in range(1, 11)]},
+        "101": {"title": "Le Bureau des Légendes", "year": 2015, "guids": ["tmdb://62852"],
+                "owned": [(s, e) for s in range(1, 6) for e in range(1, 11)]},
+    }
+    servers["items"] = [
+        _item(5001, "Dark.S02.MULTi.1080p.NF.WEB-DL.DDP5.1-AAA", tmdbid="70523", seeders=80),
+        _item(5002, "Dark.S03E01.MULTi.1080p.NF.WEB-DL-BBB"),
+        _item(5003, "Dark.S03.MULTi.1080p.NF.WEB-DL.DDP5.1-CCC", seeders=60),
+    ]
+    notify_calls = []
+
+    async def fake_notify(call):
+        notify_calls.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", fake_notify)
+    new_season_events = []
+    hass.bus.async_listen("c411_new_season", lambda e: new_season_events.append(e.data))
+
+    entry = await _setup(hass, servers)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "plex"})
+    await hass.config_entries.options.async_configure(result["flow_id"], {
+        "plex_url": servers["plex_base"], "plex_token": PLEX_TOKEN, "plex_verify_ssl": True,
+        "plex_refresh_on_complete": True,
+    })
+    await hass.async_block_till_done()
+    series_opts = {
+        "series_enabled": True, "series_auto": True, "series_follow_new": True, "plex_sections": [],
+        "series_quality": "1080p", "series_qualities": ["1080p", "720p"], "series_languages": ["vf"],
+        "series_min_seeders": 1, "series_exclude": "CAM", "series_packs": True, "series_next_seasons": True,
+        "series_max_grabs": 5, "series_interval": 30, "plex_interval": 60, "series_notify": True,
+        "series_notify_service": "notify.mobile_app_test",
+    }
+    result = await _options(hass, entry, "series", series_opts)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    ws = await hass_ws_client(hass)
+
+    # --- Vérification de Dark : saisons 2 et 3 en packs complets
+    n = len(servers["added"])
+    await ws.send_json({"id": 1, "type": "c411/series_check", "rating_key": "103"})
+    msg = await ws.receive_json()
+    assert msg["success"], msg
+    await hass.async_block_till_done()
+    titles = [a["torrents"]["filename"] for a in servers["added"][n:]]
+    assert titles == ["Dark.S02.MULTi.1080p.NF.WEB-DL.DDP5.1-AAA.torrent", "Dark.S03.MULTi.1080p.NF.WEB-DL.DDP5.1-CCC.torrent"]
+    dark = next(s for s in msg["result"]["shows"] if s["rating_key"] == "103")
+    assert dark["new_seasons"] == [2, 3] and {g["code"] for g in dark["grabbed"]} == {"S02", "S03"}
+
+    # Une notification par saison (Home Assistant + téléphone), pas une par épisode
+    assert sorted((e["season"], e["downloading"]) for e in new_season_events) == [(2, True), (3, True)]
+    assert [c["title"] for c in notify_calls] == ["Nouvelle saison : Dark", "Nouvelle saison : Dark"]
+    assert any("saison 2" in c["message"] for c in notify_calls) and not any("**" in c["message"] for c in notify_calls)
+
+    # Nouvelle vérification : aucune nouvelle notification
+    await ws.send_json({"id": 2, "type": "c411/series_check", "rating_key": "103"})
+    assert (await ws.receive_json())["success"]
+    await hass.async_block_till_done()
+    assert len(new_season_events) == 2 and len(notify_calls) == 2
+
+    # --- Série à jour (5 saisons) : recherche précise de la saison 6 par identifiant
+    await ws.send_json({"id": 3, "type": "c411/series_check", "rating_key": "101"})
+    assert (await ws.receive_json())["success"]
+    assert any(c.get("t") == "tvsearch" and c.get("tmdbid") == "62852" and c.get("season") == "6"
+               for c in servers["c411_calls"])
+
+    # --- Plex récupère les saisons 2 et 3 ; la saison 5 arrive alors que la 4 manque
+    servers["plex_shows"]["103"]["owned"] += [(s, e) for s in (2, 3) for e in range(1, 9)]
+    series = entry.runtime_data.series
+    await series.async_refresh()
+    servers["items"] += [
+        _item(5004, "Dark.S05.MULTi.1080p.WEB-DL-DDD", seeders=40),
+        _item(5005, "Dark.S04E01.MULTi.1080p.WEB-DL-EEE", seeders=40),
+    ]
+    # Rattrapage désactivé : seulement la saison suivante (4), pas la 5
+    await _options(hass, entry, "series", {**series_opts, "series_next_seasons": False, "series_auto": False})
+    series = entry.runtime_data.series
+    ws = await hass_ws_client(hass)
+    await ws.send_json({"id": 4, "type": "c411/series_check", "rating_key": "103"})
+    msg = await ws.receive_json()
+    await hass.async_block_till_done()
+    dark = next(s for s in msg["result"]["shows"] if s["rating_key"] == "103")
+    assert [a["key"] for a in dark["available"]] == ["S04E01"] and dark["new_seasons"] == [4]
+    assert {"show": "Dark", "season": 4, "downloading": False, "rating_key": "103"} in new_season_events
+    assert any("saison 4" in c["message"] and "à télécharger" in c["message"] for c in notify_calls)
