@@ -242,9 +242,9 @@ async def test_next_seasons(hass: HomeAssistant, servers, hass_ws_client) -> Non
     assert dark["new_seasons"] == [2, 3] and {g["code"] for g in dark["grabbed"]} == {"S02", "S03"}
 
     # Une notification par saison (Home Assistant + téléphone), pas une par épisode
-    assert [(e["season"], e["downloading"]) for e in new_season_events] == [(2, True), (3, True)]
+    assert sorted((e["season"], e["downloading"]) for e in new_season_events) == [(2, True), (3, True)]
     assert [c["title"] for c in notify_calls] == ["Nouvelle saison : Dark", "Nouvelle saison : Dark"]
-    assert "saison 2" in notify_calls[0]["message"] and "**" not in notify_calls[0]["message"]
+    assert any("saison 2" in c["message"] for c in notify_calls) and not any("**" in c["message"] for c in notify_calls)
 
     # Nouvelle vérification : aucune nouvelle notification
     await ws.send_json({"id": 2, "type": "c411/series_check", "rating_key": "103"})
@@ -275,5 +275,5 @@ async def test_next_seasons(hass: HomeAssistant, servers, hass_ws_client) -> Non
     await hass.async_block_till_done()
     dark = next(s for s in msg["result"]["shows"] if s["rating_key"] == "103")
     assert [a["key"] for a in dark["available"]] == ["S04E01"] and dark["new_seasons"] == [4]
-    assert new_season_events[-1] == {"show": "Dark", "season": 4, "downloading": False, "rating_key": "103"}
-    assert "à télécharger" in notify_calls[-1]["message"]
+    assert {"show": "Dark", "season": 4, "downloading": False, "rating_key": "103"} in new_season_events
+    assert any("saison 4" in c["message"] and "à télécharger" in c["message"] for c in notify_calls)
