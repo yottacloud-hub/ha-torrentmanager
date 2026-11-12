@@ -89,6 +89,7 @@ class PlexClient:
                     "year": m.get("year"),
                     "thumb": m.get("thumb"),
                     "guids": guids,
+                    "plex_id": str(m.get("guid") or "").rsplit("/", 1)[-1] if str(m.get("guid") or "").startswith("plex://") else None,
                     "section": str(section_key),
                     "episode_count": m.get("leafCount") or 0,
                     "added_at": m.get("addedAt"),

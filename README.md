@@ -5,11 +5,11 @@
 - **Panneau « TorrentManager »** dans la barre latérale avec cinq onglets :
   - **Nouveautés** : derniers ajouts, filtrables par catégorie (Films, Séries, Animation…) et triables par date, sources, taille ou popularité.
   - **Recherche** : recherche plein texte sur C411, avec filtres et bouton « Afficher plus ».
-  - **Pour vous** : recommandations d'après vos téléchargements et vos séries Plex (TMDB), et ce qui est populaire en ce moment sur C411.
+  - **Pour vous** : recommandations du catalogue Plex d'après vos téléchargements et vos séries suivies, et ce qui est populaire en ce moment sur C411.
   - **Séries** : vos séries Plex avec leur affiche, le dernier épisode possédé, les nouveaux épisodes trouvés sur C411 et des interrupteurs « Suivre » / « Auto ».
   - **Téléchargements** : progression en direct, vitesse, temps restant, pause / reprise / revérification / suppression (avec ou sans fichiers).
 - **Une seule carte par contenu** : les différentes versions d'un même film ou épisode sont regroupées, et la meilleure s'affiche selon vos préférences de qualité et de langue, puis selon sa réputation. Des filtres rapides (4K, 1080p, 720p ; VF/MULTi, VOSTFR) et un lien « +N versions » permettent de voir le reste.
-- **Affiches**, titre français et note TMDB pour les films et séries (clé TMDB gratuite, facultative).
+- **Affiches**, titre français et note pour les films et séries, depuis le catalogue Plex (même jeton que la connexion Plex).
 - Contenu pour adultes masqué par défaut.
 - Accessible aux utilisateurs non administrateurs, avec le niveau d'accès de votre choix.
 - Les releases déjà présentes dans qBittorrent sont reconnues grâce à leur infohash et affichent leur progression à la place du bouton « Télécharger ».
@@ -58,7 +58,7 @@
 | Masquer le contenu pour adultes | Activé |
 | Meilleure version seulement | Activé (modifiable aussi dans le panneau) |
 | Qualité / langue préférées pour choisir la meilleure version | 1080p / VF |
-| Clé API TMDB (affiches) | Vide. Créez un compte gratuit sur themoviedb.org, puis Paramètres → API |
+| Clé API TMDB | Vide, et inutile si Plex est connecté : les affiches et recommandations viennent du catalogue Plex. TMDB ne sert qu'en complément ou sans Plex |
 | Accès des utilisateurs non administrateurs | Consultation et téléchargement |
 
 Niveaux d'accès pour les comptes non administrateurs (les administrateurs ont toujours tous les droits) :
@@ -199,7 +199,7 @@ content: >
 ## Dépannage
 
 - **« qBittorrent : fichier torrent invalide »** (avant la 1.3.0) : mettez à jour. TorrentManager vérifie désormais le fichier et, s'il le faut, confie le lien à qBittorrent. Si une erreur persiste, le journal de Home Assistant (Paramètres → Système → Journaux, filtre `c411`) indique ce que C411 a renvoyé.
-- **Pas d'affiches** : ajoutez une clé TMDB gratuite (Configurer → Affichage et accès).
+- **Pas d'affiches** : connectez Plex (Configurer → Connexion Plex). Le même jeton donne accès au catalogue en ligne de Plex. Si rien ne s'affiche malgré tout, le journal (filtre `c411`) indique la réponse du catalogue.
 
 - **« Impossible de joindre qBittorrent »** : vérifiez que l'URL est joignable depuis la machine Home Assistant. Avec Docker, `localhost` désigne le conteneur lui-même, pas l'hôte.
 - **« Identifiants incorrects » alors qu'ils sont bons** : qBittorrent bannit temporairement l'adresse IP après plusieurs échecs de connexion. Attendez, ou ajoutez l'IP de Home Assistant à la liste blanche (Options → Interface web → « Contourner l'authentification pour les clients du sous-réseau »).

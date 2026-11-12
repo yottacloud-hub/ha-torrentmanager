@@ -54,6 +54,7 @@ class C411RuntimeData:
     series: Any = None  # SeriesCoordinator quand Plex est configuré
     tmdb: Any = None  # TmdbClient quand une clé TMDB est configurée
     recommender: Any = None
+    plex_meta: Any = None  # catalogue en ligne Plex (affiches, recommandations)
 
 
 class C411FeedCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):

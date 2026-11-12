@@ -32,6 +32,8 @@ class TmdbAuthError(TmdbError):
 class TmdbClient:
     """Petit client TMDB v3 avec cache disque."""
 
+    kind = "tmdb"
+
     def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession, key: str) -> None:
         self._hass = hass
         self._session = session
@@ -85,6 +87,7 @@ class TmdbClient:
         date = data.get("release_date") or data.get("first_air_date") or ""
         return {
             "id": data["id"],
+            "tmdbid": data["id"],
             "media": media,
             "title": data.get("title") or data.get("name"),
             "year": int(date[:4]) if date[:4].isdigit() else None,
