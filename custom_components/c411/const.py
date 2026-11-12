@@ -142,6 +142,9 @@ LANGUAGE_GROUPS = {
 SERIES_CATEGORIES = ["5000", "5070", "5080"]
 
 EVENT_EPISODE_GRABBED = "c411_episode_grabbed"
+EVENT_NEW_SEASON = "c411_new_season"
+CONF_SERIES_NEXT_SEASONS = "series_next_seasons"
+CONF_SERIES_NOTIFY_SERVICE = "series_notify_service"
 
 # --- Affichage ---------------------------------------------------------------
 CONF_HIDE_ADULT = "hide_adult"

@@ -19,6 +19,9 @@ from homeassistant.util import dt as dt_util
 from .api import C411Client, C411Error
 from .const import (
     CONF_PLEX_INTERVAL,
+    CONF_SERIES_NEXT_SEASONS,
+    CONF_SERIES_NOTIFY_SERVICE,
+    EVENT_NEW_SEASON,
     CONF_PLEX_SECTIONS,
     CONF_SERIES_AUTO,
     CONF_SERIES_EXCLUDE,
@@ -86,6 +89,7 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._prefs: dict[str, dict[str, bool]] = {}
         self._grabbed: dict[str, dict[str, dict[str, Any]]] = {}
         self._available: dict[str, dict[str, dict[str, Any]]] = {}
+        self._notified: dict[str, list[int]] = {}  # saisons déjà annoncées, par série
         self._rr = 0
         self._lock = asyncio.Lock()
         self._posters: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
@@ -100,6 +104,7 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._prefs = data.get("prefs", {})
         self._grabbed = data.get("grabbed", {})
         self._available = data.get("available", {})
+        self._notified = data.get("notified", {})
         self.last_check = data.get("last_check")
 
     def _snapshot(self) -> dict[str, Any]:
@@ -107,6 +112,7 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "prefs": self._prefs,
             "grabbed": self._grabbed,
             "available": self._available,
+            "notified": self._notified,
             "last_check": self.last_check,
         }
 
@@ -192,6 +198,15 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._grabbed[key].pop(c)
             if not self._grabbed[key]:
                 self._grabbed.pop(key)
+        for key in list(self._notified):
+            show = self._shows.get(key)
+            if show is None or not show.get("last"):
+                continue
+            kept = [n for n in self._notified[key] if n > show["last"][0]]
+            if kept:
+                self._notified[key] = kept
+            else:
+                self._notified.pop(key)
         for key in list(self._available):
             show = self._shows.get(key)
             if show is None:
@@ -215,6 +230,8 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         grabbed = self._grabbed_codes(show["rating_key"])
         if _pack_code(season) in grabbed:
             return False
+        if season > last[0] + 1 and not self.config_entry.options.get(CONF_SERIES_NEXT_SEASONS, True):
+            return False  # rattrapage désactivé : seulement la saison en cours et la suivante
         if not episodes:  # pack de saison : seulement pour une saison entièrement absente
             return season > last[0] and not any(c.startswith(_pack_code(season)) for c in grabbed)
         for ep in episodes:
@@ -287,11 +304,7 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         raise HomeAssistantError("Série inconnue dans Plex")
                     targets = [only]
                 for key in targets:
-                    show = self._shows[key]
-                    query = " ".join(sorted(show["keys"], key=len)[0].split()[:6])
-                    releases += [
-                        r.as_dict() for r in await self.c411.search(query, categories=SERIES_CATEGORIES, limit=100)
-                    ]
+                    releases += await self._targeted(self._shows[key])
                 self.last_check_error = None
             except C411Error as err:
                 self.last_check_error = str(err)
@@ -303,11 +316,71 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if found:
                 _LOGGER.info("%s nouvel(s) épisode(s) trouvé(s) sur C411", found)
             await self._auto_grab()
+            self._announce_seasons()
             self.last_check = dt_util.utcnow().isoformat()
             self._save()
             payload = self._payload()
             self.async_set_updated_data(payload)
             return payload
+
+    async def _targeted(self, show: dict[str, Any]) -> list[dict[str, Any]]:
+        """Recherche précise d'une série, puis de sa saison suivante si rien n'a été trouvé pour elle."""
+        tmdb = show.get("guids", {}).get("tmdb")
+        name = " ".join(sorted(show["keys"], key=len)[0].split()[:6])
+        # Par nom (toujours) et par identifiant TMDB (si connu) : une release mal étiquetée n'échappe à aucune des deux
+        found = await self.c411.search(name, categories=SERIES_CATEGORIES, limit=100)
+        if tmdb:
+            found += await self.c411.search("", limit=100, tmdbid=tmdb, media="tv")
+        seen: set[str] = set()
+        releases = [r.as_dict() for r in found if not (r.guid in seen or seen.add(r.guid))]
+        last = show.get("last")
+        if last:
+            nxt = last[0] + 1
+            seasons = {p.season for p in (parse_release(r["title"]) for r in releases) if p}
+            if nxt not in seasons:
+                if tmdb:
+                    more = await self.c411.search("", limit=50, tmdbid=tmdb, media="tv", season=nxt)
+                else:
+                    more = await self.c411.search(f"{name} S{nxt:02d}", categories=SERIES_CATEGORIES, limit=50)
+                releases += [r.as_dict() for r in more]
+        return releases
+
+    def _announce_seasons(self) -> None:
+        """Une notification par nouvelle saison trouvée (ou lancée) pour une série suivie."""
+        for key, show in self._shows.items():
+            if not self._prefs.get(key, {}).get("follow") or not show.get("last"):
+                continue
+            last_season = show["last"][0]
+            available = {r["season"] for r in self._available.get(key, {}).values() if r["season"] > last_season}
+            grabbed = {_sort_key(c)[0] for c in self._grabbed.get(key, {}) if _sort_key(c)[0] > last_season}
+            done = set(self._notified.get(key, []))
+            for season in sorted((available | grabbed) - done):
+                started = season in grabbed
+                message = (
+                    f"La saison {season} de **{show['title']}** est sur C411"
+                    + (" — téléchargement lancé." if started else " — à télécharger depuis l'onglet Séries.")
+                )
+                self._notify(f"Nouvelle saison : {show['title']}", message, f"c411_{key}_season_{season}")
+                self.hass.bus.async_fire(
+                    EVENT_NEW_SEASON,
+                    {"show": show["title"], "season": season, "downloading": started, "rating_key": key},
+                )
+                self._notified.setdefault(key, []).append(season)
+
+    @callback
+    def _notify(self, title: str, message: str, notification_id: str) -> None:
+        """Notification Home Assistant, et sur le téléphone si un service est choisi."""
+        opts = self.config_entry.options
+        if not opts.get(CONF_SERIES_NOTIFY, True):
+            return
+        persistent_notification.async_create(self.hass, message, title=title, notification_id=notification_id)
+        service = (opts.get(CONF_SERIES_NOTIFY_SERVICE) or "").strip()
+        if service.startswith("notify.") and self.hass.services.has_service("notify", service[7:]):
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify", service[7:], {"title": title, "message": message.replace("**", "")}
+                )
+            )
 
     def _next_targets(self) -> list[str]:
         """Quelques séries suivies, à tour de rôle, pour une recherche ciblée."""
@@ -362,12 +435,12 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "automatic": automatic, "rating_key": key,
         }
         self.hass.bus.async_fire(EVENT_EPISODE_GRABBED, event)
-        if self.config_entry.options.get(CONF_SERIES_NOTIFY, True):
-            persistent_notification.async_create(
-                self.hass,
+        last = show.get("last")
+        if not last or rel["season"] <= last[0]:
+            self._notify(
+                "Nouvel épisode",
                 f"**{show['title']}** — {akey} envoyé à qBittorrent\n\n`{rel['title']}`",
-                title="Nouvel épisode",
-                notification_id=f"c411_{key}_{akey}",
+                f"c411_{key}_{akey}",
             )
         return event
 
@@ -443,6 +516,10 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             grabbed = sorted(self._grabbed.get(key, {}), key=_sort_key)
             last = show.get("last")
             status = "available" if available else "grabbed" if grabbed else "up_to_date"
+            seasons_ahead = sorted(
+                {r["season"] for r in available if last and r["season"] > last[0]}
+                | {_sort_key(c)[0] for c in grabbed if last and _sort_key(c)[0] > last[0]}
+            )
             shows.append(
                 {
                     "rating_key": key,
@@ -455,6 +532,7 @@ class SeriesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "episode_count": len(show.get("owned", ())),
                     "season_count": len({s for s, _ in show.get("owned", ())}),
                     "status": status,
+                    "new_seasons": seasons_ahead,
                     "available": [
                         {k: r[k] for k in ("key", "title", "size", "seeders", "quality", "languages", "details_url", "found_at")}
                         for r in available

@@ -110,7 +110,7 @@
       },
       "series": {
         "title": "Suivi des séries",
-        "description": "Pour chaque série de Plex, l'intégration cherche sur C411 les épisodes qui suivent le dernier épisode présent dans Plex.",
+        "description": "Pour chaque série de Plex, l'intégration cherche sur C411 les épisodes et les saisons qui suivent le dernier épisode présent dans Plex. Une notification est envoyée à chaque nouvelle saison trouvée.",
         "data": {
           "series_enabled": "Activer le suivi des séries",
           "series_auto": "Télécharger automatiquement les nouveaux épisodes",
@@ -125,7 +125,9 @@
           "series_max_grabs": "Téléchargements automatiques max. par vérification",
           "series_interval": "Fréquence de vérification sur C411",
           "plex_interval": "Fréquence de relecture de la bibliothèque Plex",
-          "series_notify": "Notification Home Assistant à chaque épisode envoyé"
+          "series_notify": "Notifications (nouvelle saison, épisode envoyé)",
+          "series_next_seasons": "Rattraper toutes les saisons suivantes manquantes (sinon : seulement la saison en cours et la suivante)",
+          "series_notify_service": "Envoyer aussi les notifications sur ce service (ex. notify.mobile_app_mon_telephone)"
         }
       },
       "display": {

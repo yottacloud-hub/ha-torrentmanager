@@ -4,6 +4,21 @@ Les versions suivent [SemVer](https://semver.org/lang/fr/) : `MAJEUR.MINEUR.CORR
 Pour publier une version : augmenter `version` dans `custom_components/c411/manifest.json`,
 ajouter sa section ci-dessous, puis fusionner sur `main`. La release GitHub est créée automatiquement.
 
+## [1.5.0] - 2026-11-12
+
+### Ajouté
+- **Saisons suivantes** : si vous n'avez que la saison 1 d'une série suivie, les saisons suivantes sont recherchées
+  et téléchargées (packs de saison complets en priorité).
+  - Recherche ciblée par nom **et** par identifiant de la série, puis recherche précise de la saison suivante
+    (`tvsearch` + numéro de saison) si rien n'a été trouvé pour elle.
+  - Option « Rattraper toutes les saisons suivantes manquantes » (activée). Désactivée : seulement la saison en cours et la suivante.
+- **Notification « Nouvelle saison »** : une seule par saison et par série, que le téléchargement soit automatique
+  (« téléchargement lancé ») ou non (« à télécharger depuis l'onglet Séries »).
+  - Option pour l'envoyer aussi sur votre téléphone (service `notify.mobile_app_…`).
+  - Événement `c411_new_season`.
+  - Badge « Saison N » sur la série dans l'onglet Séries.
+- Les épisodes d'une nouvelle saison ne génèrent plus une notification chacun : la notification de saison les remplace.
+
 ## [1.4.0] - 2026-11-12
 
 ### Modifié
