@@ -41,7 +41,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     for handler in (
         ws_config, ws_latest, ws_search, ws_download, ws_torrents, ws_action,
         ws_series, ws_series_update, ws_series_check, ws_series_grab, ws_series_forget,
-        ws_artwork,
+        ws_artwork, ws_recommendations,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -158,6 +158,9 @@ async def ws_latest(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         vol.Optional("categories", default=[]): [vol.Coerce(str)],
         vol.Optional("limit", default=50): vol.All(int, vol.Range(min=1, max=100)),
         vol.Optional("offset", default=0): vol.All(int, vol.Range(min=0)),
+        vol.Optional("tmdbid"): vol.Any(int, str),
+        vol.Optional("imdbid"): str,
+        vol.Optional("media"): vol.In(["movie", "tv"]),
     }
 )
 @websocket_api.async_response
@@ -169,10 +172,19 @@ async def ws_search(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 
     try:
         rt = get_runtime(hass)
-        results = await rt.c411.search(
-            msg["query"], categories=msg["categories"] or None,
-            limit=msg["limit"], offset=msg["offset"],
-        )
+        if msg.get("tmdbid") or msg.get("imdbid"):
+            # Recherche précise par identifiant, puis par titre si C411 ne trouve rien
+            results = await rt.c411.search(
+                "", limit=msg["limit"], offset=msg["offset"],
+                tmdbid=msg.get("tmdbid"), imdbid=msg.get("imdbid"), media=msg.get("media"),
+            )
+            if not results and msg["query"]:
+                results = await rt.c411.search(msg["query"], limit=msg["limit"], offset=msg["offset"])
+        else:
+            results = await rt.c411.search(
+                msg["query"], categories=msg["categories"] or None,
+                limit=msg["limit"], offset=msg["offset"],
+            )
     except (HomeAssistantError, C411Error) as err:
         _err(connection, msg, err)
         return
@@ -427,3 +439,24 @@ async def ws_artwork(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
             if not (current and current.get("poster")) and (url := rt.series.poster_for(item)):
                 result[item["key"]] = {**(current or {}), "poster": url}
     connection.send_result(msg["id"], {"artwork": result, "error": error})
+
+
+# --------------------------------------------------------------------- recommandations
+@websocket_api.websocket_command(
+    {vol.Required("type"): "c411/recommendations", vol.Optional("refresh", default=False): bool}
+)
+@websocket_api.async_response
+async def ws_recommendations(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Titres recommandés à partir des téléchargements C411 et des séries Plex."""
+    if not _check(hass, connection, msg, "view"):
+        return
+    from . import get_runtime  # noqa: PLC0415
+    from .tmdb import TmdbError  # noqa: PLC0415
+
+    try:
+        rt = get_runtime(hass)
+        result = await rt.recommender.build(rt, refresh=msg["refresh"])
+    except (HomeAssistantError, TmdbError) as err:
+        _err(connection, msg, err)
+        return
+    connection.send_result(msg["id"], result)

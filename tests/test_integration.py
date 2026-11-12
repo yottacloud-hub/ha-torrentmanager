@@ -226,3 +226,33 @@ async def test_clients_directly(hass: HomeAssistant, servers) -> None:
             await bad.version()
     finally:
         await runner.cleanup()
+
+
+async def test_torrent_errors(hass: HomeAssistant, servers, hass_ws_client) -> None:
+    """Fichier refusé par C411, fichier sans torrent, fichier refusé par qBittorrent."""
+    await _setup(hass, servers)
+    ws = await hass_ws_client(hass)
+    base = servers["base"]
+
+    # C411 refuse : message clair, rien n'est envoyé
+    n = len(servers["added"])
+    await ws.send_json({"id": 1, "type": "c411/download", "url": f"{base}/api/torznab?t=get&id=failure"})
+    msg = await ws.receive_json()
+    assert not msg["success"] and "Torrent introuvable" in msg["error"]["message"]
+    assert len(servers["added"]) == n
+
+    # Réponse sans torrent : on confie le lien à qBittorrent
+    await ws.send_json({"id": 2, "type": "c411/download", "url": f"{base}/api/torznab?t=get&id=noinfo"})
+    msg = await ws.receive_json()
+    assert msg["success"], msg
+    assert servers["added"][-1]["urls"] == f"{base}/api/torznab?t=get&id=noinfo&apikey={API_KEY}"
+
+    # qBittorrent refuse le fichier (415) : nouvel essai avec le lien
+    servers["qb_reject_files"] = True
+    await ws.send_json({"id": 3, "type": "c411/download", "url": f"{base}/api/torznab?t=get&id=1001",
+                        "categories": ["2000"]})
+    msg = await ws.receive_json()
+    assert msg["success"], msg
+    added = servers["added"][-1]
+    assert "torrents" not in added and added["urls"].endswith(f"id=1001&apikey={API_KEY}")
+    assert added["tags"] == "c411"

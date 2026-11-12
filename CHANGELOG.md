@@ -4,6 +4,23 @@ Les versions suivent [SemVer](https://semver.org/lang/fr/) : `MAJEUR.MINEUR.CORR
 Pour publier une version : augmenter `version` dans `custom_components/c411/manifest.json`,
 ajouter sa section ci-dessous, puis fusionner sur `main`. La release GitHub est créée automatiquement.
 
+## [1.3.0] - 2026-11-12
+
+### Corrigé
+- **« qBittorrent : fichier torrent invalide »** : le fichier reçu de C411 est maintenant vraiment décodé avant l'envoi.
+  - Si C411 refuse le téléchargement, sa raison s'affiche.
+  - Si le fichier est inexploitable, ou si qBittorrent le refuse quand même, TorrentManager envoie le lien
+    de téléchargement à qBittorrent, qui le récupère lui-même. Le détail est inscrit dans le journal de Home Assistant.
+
+### Ajouté
+- **Onglet « Pour vous »** : recommandations TMDB calculées à partir de vos téléchargements C411 récents et de vos séries Plex
+  suivies, sans ce que vous avez déjà. Chaque carte montre l'affiche, la note, le résumé et la raison de la recommandation.
+  Le bouton « Trouver sur C411 » cherche le titre exact par son identifiant TMDB.
+- Section « Populaire en ce moment sur C411 » (fonctionne aussi sans clé TMDB).
+- Recherche C411 par identifiant TMDB / IMDb (repli automatique sur le titre).
+- Message dans Nouveautés et Recherche quand aucune clé TMDB n'est configurée (affiches), masquable.
+- Utilisation de l'image fournie par le flux C411 quand il en contient une.
+
 ## [1.2.0] - 2026-11-12
 
 ### Ajouté

@@ -151,3 +151,26 @@ class TmdbClient:
             await asyncio.gather(*(one(ck, it) for ck, it in todo))
             self._save()
         return out
+
+
+    async def recommendations(self, media: str, tmdb_id: int) -> list[dict[str, Any]]:
+        """Titres recommandés par TMDB pour un film / une série (cache 7 jours)."""
+        await self._load()
+        ck = f"rec|{media}|{tmdb_id}"
+        cached = self._cache.get(ck)
+        if cached is not None and time.time() - cached.get("at", 0) < NEGATIVE_TTL:
+            return cached["data"]
+        data = await self._get(f"/{media}/{tmdb_id}/recommendations", {"language": "fr-FR", "page": 1})
+        out = []
+        for item in data.get("results") or []:
+            kind = item.get("media_type") or media
+            if kind not in ("movie", "tv"):
+                continue
+            summary = self._summary(item, kind)
+            if summary:
+                summary["original_title"] = item.get("original_title") or item.get("original_name")
+                summary["popularity"] = item.get("popularity") or 0
+                out.append(summary)
+        self._cache[ck] = {"found": True, "at": time.time(), "data": out}
+        self._save()
+        return out
