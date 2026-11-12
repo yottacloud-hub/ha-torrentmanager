@@ -1,0 +1,101 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connexion à C411",
+        "description": "Générez une clé API sur la page « Intégrations API » de votre compte C411 ({integrations_url}).",
+        "data": { "c411_url": "Adresse du site", "api_key": "Clé API C411" }
+      },
+      "qbittorrent": {
+        "title": "Serveur qBittorrent",
+        "description": "Adresse de l'interface web de qBittorrent (Outils → Options → Interface web).",
+        "data": {
+          "qb_url": "URL de l'interface web",
+          "qb_username": "Utilisateur",
+          "qb_password": "Mot de passe",
+          "qb_verify_ssl": "Vérifier le certificat SSL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Identifiants à mettre à jour",
+        "description": "C411 ou qBittorrent refuse les identifiants enregistrés.",
+        "data": { "api_key": "Clé API C411", "qb_username": "Utilisateur qBittorrent", "qb_password": "Mot de passe qBittorrent" }
+      },
+      "reconfigure": {
+        "title": "Modifier qBittorrent",
+        "data": {
+          "qb_url": "URL de l'interface web",
+          "qb_username": "Utilisateur",
+          "qb_password": "Mot de passe",
+          "qb_verify_ssl": "Vérifier le certificat SSL"
+        }
+      }
+    },
+    "error": {
+      "invalid_api_key": "Clé API C411 refusée.",
+      "cannot_connect_c411": "Impossible de joindre C411.",
+      "invalid_qb_auth": "Identifiants qBittorrent incorrects (ou IP bannie après trop d'échecs).",
+      "cannot_connect_qb": "Impossible de joindre qBittorrent. Vérifiez l'URL et que l'interface web est activée."
+    },
+    "abort": {
+      "already_configured": "Déjà configuré.",
+      "single_instance_allowed": "Une seule instance est possible.",
+      "reauth_successful": "Identifiants mis à jour.",
+      "reconfigure_successful": "Configuration mise à jour."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options C411",
+        "data": {
+          "feed_categories": "Catégories suivies pour les nouveautés (vide = toutes)",
+          "feed_limit": "Nombre de nouveautés récupérées",
+          "feed_interval": "Fréquence de rafraîchissement des nouveautés",
+          "qb_category": "Catégorie qBittorrent par défaut",
+          "qb_save_path": "Dossier de destination (vide = défaut de qBittorrent)",
+          "qb_tag": "Étiquette ajoutée aux torrents C411",
+          "start_paused": "Ajouter les torrents en pause",
+          "qb_interval": "Fréquence de suivi de qBittorrent"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "latest_release": { "name": "Dernière nouveauté" },
+      "download_speed": { "name": "Vitesse de téléchargement" },
+      "upload_speed": { "name": "Vitesse d'envoi" },
+      "active_downloads": { "name": "Téléchargements actifs" },
+      "c411_downloads": { "name": "Téléchargements C411 actifs" },
+      "total_torrents": { "name": "Torrents" },
+      "c411_progress": { "name": "Torrents C411" }
+    }
+  },
+  "services": {
+    "search": {
+      "name": "Rechercher sur C411",
+      "description": "Recherche des releases sur C411 et renvoie les résultats.",
+      "fields": {
+        "query": { "name": "Recherche", "description": "Texte recherché (vide = derniers ajouts)." },
+        "categories": { "name": "Catégories", "description": "Identifiants de catégories Torznab." },
+        "limit": { "name": "Nombre de résultats", "description": "Entre 1 et 100." }
+      }
+    },
+    "download": {
+      "name": "Télécharger avec qBittorrent",
+      "description": "Récupère le .torrent sur C411 et l'envoie à qBittorrent.",
+      "fields": {
+        "url": { "name": "Lien de téléchargement", "description": "download_url renvoyé par la recherche." },
+        "title": { "name": "Titre", "description": "Utilisé pour le nom du fichier et l'événement." },
+        "category": { "name": "Catégorie qBittorrent", "description": "Remplace la catégorie par défaut." },
+        "save_path": { "name": "Dossier", "description": "Remplace le dossier par défaut." },
+        "paused": { "name": "En pause", "description": "Ajoute le torrent en pause." }
+      }
+    },
+    "refresh": {
+      "name": "Rafraîchir",
+      "description": "Rafraîchit les nouveautés C411 et l'état de qBittorrent."
+    }
+  }
+}

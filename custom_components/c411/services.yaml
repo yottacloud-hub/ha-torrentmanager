@@ -1,0 +1,51 @@
+search:
+  fields:
+    query:
+      example: "Dune"
+      selector:
+        text:
+    categories:
+      example: ["2000"]
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options:
+            - { label: "Films", value: "2000" }
+            - { label: "Séries TV", value: "5000" }
+            - { label: "Séries d'animation", value: "5070" }
+            - { label: "Films d'animation", value: "2060" }
+            - { label: "Documentaires", value: "2070" }
+            - { label: "Émissions TV", value: "5080" }
+            - { label: "Musique", value: "3010" }
+            - { label: "Livres audio", value: "3030" }
+            - { label: "Ebooks", value: "7000" }
+            - { label: "BD / Comics / Manga", value: "7030" }
+            - { label: "Jeux vidéo", value: "1000" }
+            - { label: "Applications", value: "4000" }
+    limit:
+      default: 25
+      selector:
+        number:
+          min: 1
+          max: 100
+download:
+  fields:
+    url:
+      required: true
+      example: "https://c411.org/api/torznab?t=get&id=12345"
+      selector:
+        text:
+    title:
+      selector:
+        text:
+    category:
+      selector:
+        text:
+    save_path:
+      selector:
+        text:
+    paused:
+      selector:
+        boolean:
+refresh:

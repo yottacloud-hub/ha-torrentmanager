@@ -1,0 +1,21 @@
+{
+  "domain": "c411",
+  "name": "C411 + qBittorrent",
+  "codeowners": [
+    "@yottacloud-hub"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/yottacloud-hub/ha-torrentmanager",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/yottacloud-hub/ha-torrentmanager/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}

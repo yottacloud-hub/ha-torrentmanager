@@ -1,0 +1,672 @@
+/*
+ * Panneau C411 pour Home Assistant
+ * Nouveautés · Recherche · Téléchargements qBittorrent
+ * Aucune dépendance, aucun build : un simple Web Component.
+ */
+
+const ICONS = {
+  "1": "mdi:gamepad-variant",
+  "2": "mdi:movie-open",
+  "3": "mdi:music",
+  "4": "mdi:application-cog",
+  "5": "mdi:television-classic",
+  "6": "mdi:eye-off",
+  "7": "mdi:book-open-variant",
+  "8": "mdi:printer-3d",
+};
+const SPECIAL_ICONS = { "2060": "mdi:movie-roll", "5070": "mdi:drama-masks", "2070": "mdi:earth", "3030": "mdi:headphones" };
+
+const STATES = {
+  downloading: ["Téléchargement", "dl"],
+  forcedDL: ["Téléchargement (forcé)", "dl"],
+  metaDL: ["Métadonnées…", "wait"],
+  forcedMetaDL: ["Métadonnées…", "wait"],
+  stalledDL: ["En attente de sources", "wait"],
+  queuedDL: ["En file d'attente", "wait"],
+  allocating: ["Allocation", "wait"],
+  checkingDL: ["Vérification", "wait"],
+  checkingUP: ["Vérification", "wait"],
+  checkingResumeData: ["Vérification", "wait"],
+  pausedDL: ["En pause", "paused"],
+  stoppedDL: ["En pause", "paused"],
+  uploading: ["Partage", "up"],
+  forcedUP: ["Partage (forcé)", "up"],
+  stalledUP: ["Terminé · partage", "up"],
+  queuedUP: ["Terminé · en file", "done"],
+  pausedUP: ["Terminé", "done"],
+  stoppedUP: ["Terminé", "done"],
+  moving: ["Déplacement", "wait"],
+  missingFiles: ["Fichiers manquants", "err"],
+  error: ["Erreur", "err"],
+  unknown: ["Inconnu", "wait"],
+};
+const PAUSED = new Set(["pausedDL", "stoppedDL", "pausedUP", "stoppedUP"]);
+
+const nf1 = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
+const rtf = new Intl.RelativeTimeFormat("fr", { numeric: "auto" });
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function bytes(n) {
+  n = Number(n) || 0;
+  const u = ["o", "Ko", "Mo", "Go", "To"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${nf1.format(n)} ${u[i]}`;
+}
+const speed = (n) => `${bytes(n)}/s`;
+function ago(iso) {
+  if (!iso) return "";
+  const diff = (new Date(iso).getTime() - Date.now()) / 1000;
+  const steps = [[60, "second"], [3600, "minute"], [86400, "hour"], [604800, "day"], [2629800, "week"], [31557600, "month"], [Infinity, "year"]];
+  const div = { second: 1, minute: 60, hour: 3600, day: 86400, week: 604800, month: 2629800, year: 31557600 };
+  for (const [lim, unit] of steps) if (Math.abs(diff) < lim) return rtf.format(Math.round(diff / div[unit]), unit);
+  return "";
+}
+function eta(s) {
+  s = Number(s);
+  if (!isFinite(s) || s <= 0 || s >= 8640000) return "∞";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return `${d} j ${h} h`;
+  if (h) return `${h} h ${m} min`;
+  if (m) return `${m} min`;
+  return `${Math.floor(s)} s`;
+}
+
+class C411Panel extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._s = {
+      tab: "latest",
+      config: null,
+      latest: [], latestError: null, latestLoading: false, latestUpdate: null,
+      results: null, searchError: null, searchLoading: false, lastQuery: "", offset: 0, more: false,
+      cats: new Set(), latestCats: new Set(),
+      sort: "date",
+      qb: null, qbError: null,
+      dlFilter: "c411",
+      sending: new Set(), sent: new Set(),
+      confirm: null,
+      qbCategory: null, paused: null,
+    };
+    this._built = false;
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (this._menu) this._menu.hass = hass;
+    if (first && this.isConnected) this._init();
+  }
+  set narrow(v) { this._narrow = v; if (this._menu) this._menu.narrow = v; }
+  set panel(v) { this._panel = v; }
+
+  connectedCallback() {
+    if (this._hass && !this._built) this._init();
+    this._startPolling();
+  }
+  disconnectedCallback() { clearInterval(this._timer); this._timer = null; }
+
+  _startPolling() {
+    if (this._timer || !this._hass) return;
+    this._timer = setInterval(() => { if (!document.hidden) this._loadTorrents(); }, 4000);
+  }
+
+  async _init() {
+    if (this._built) return;
+    this._build();
+    this._built = true;
+    this._startPolling();
+    try {
+      const cfg = await this._ws({ type: "c411/config" });
+      this._s.config = cfg;
+      this._s.qbCategory = cfg.default_category || "";
+      this._s.paused = !!cfg.start_paused;
+      this._renderSendOptions();
+      this._renderChips();
+    } catch (e) { this._toast(this._msg(e), true); }
+    this._loadLatest(false);
+    this._loadTorrents();
+  }
+
+  _ws(msg) { return this._hass.callWS(msg); }
+  _msg(e) { return e?.message || e?.error?.message || String(e); }
+
+  // ---------------------------------------------------------------- données
+  async _loadLatest(refresh) {
+    this._s.latestLoading = true; this._renderLatest();
+    try {
+      const r = await this._ws({ type: "c411/latest", refresh });
+      this._s.latest = r.results || [];
+      this._s.latestError = r.error;
+      this._s.latestUpdate = r.last_update;
+    } catch (e) { this._s.latestError = this._msg(e); }
+    this._s.latestLoading = false; this._renderLatest();
+  }
+
+  async _search(append = false) {
+    const q = this.shadowRoot.getElementById("q").value.trim();
+    const s = this._s;
+    if (!append) { s.offset = 0; s.lastQuery = q; }
+    s.searchLoading = true; s.searchError = null; this._renderResults();
+    try {
+      const r = await this._ws({ type: "c411/search", query: s.lastQuery, categories: [...s.cats], limit: 50, offset: s.offset });
+      const items = r.results || [];
+      s.results = append ? [...(s.results || []), ...items] : items;
+      s.more = items.length === 50;
+      s.offset += items.length;
+    } catch (e) { s.searchError = this._msg(e); if (!append) s.results = []; }
+    s.searchLoading = false; this._renderResults();
+  }
+
+  async _loadTorrents() {
+    if (!this._hass || !this._built) return;
+    try {
+      this._s.qb = await this._ws({ type: "c411/torrents", live: true });
+      this._s.qbError = null;
+    } catch (e) { this._s.qbError = this._msg(e); }
+    this._renderStats();
+    if (this._s.tab === "downloads") this._renderDownloads();
+    else this._refreshBadges();
+  }
+
+  async _download(rel) {
+    const s = this._s;
+    if (!rel.download_url || s.sending.has(rel.guid)) return;
+    s.sending.add(rel.guid); this._refreshBadges();
+    try {
+      const msg = { type: "c411/download", url: rel.download_url, title: rel.title, paused: !!s.paused };
+      if (s.qbCategory) msg.category = s.qbCategory;
+      await this._ws(msg);
+      s.sent.add(rel.guid);
+      this._toast(`Envoyé à qBittorrent : ${rel.title}`);
+      setTimeout(() => this._loadTorrents(), 1500);
+    } catch (e) { this._toast(this._msg(e), true); }
+    s.sending.delete(rel.guid); this._refreshBadges();
+  }
+
+  async _action(action, hash) {
+    try {
+      this._s.qb = await this._ws({ type: "c411/torrent_action", action, hashes: [hash] });
+      const labels = { pause: "Mis en pause", resume: "Relancé", delete: "Torrent retiré", delete_files: "Torrent et fichiers supprimés", recheck: "Vérification lancée" };
+      this._toast(labels[action] || "OK");
+    } catch (e) { this._toast(this._msg(e), true); }
+    this._s.confirm = null;
+    this._renderDownloads(); this._renderStats();
+  }
+
+  // ---------------------------------------------------------------- squelette
+  _build() {
+    const root = this.shadowRoot;
+    root.innerHTML = `
+      <style>${STYLE}</style>
+      <div class="toolbar">
+        <span id="menu"></span>
+        <div class="title"><ha-icon icon="mdi:movie-search"></ha-icon> C411</div>
+        <div class="stats" id="stats"></div>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button data-tab="latest" class="active"><ha-icon icon="mdi:new-box"></ha-icon><span>Nouveautés</span></button>
+        <button data-tab="search"><ha-icon icon="mdi:magnify"></ha-icon><span>Recherche</span></button>
+        <button data-tab="downloads"><ha-icon icon="mdi:download"></ha-icon><span>Téléchargements</span><b id="dlcount"></b></button>
+      </nav>
+      <main>
+        <section id="pane-latest">
+          <div class="controls">
+            <div class="chips" id="chips-latest"></div>
+            <div class="row">
+              <label class="sort">Trier <select id="sort-latest">
+                <option value="date">Plus récents</option><option value="seeders">Plus de sources</option>
+                <option value="size">Plus gros</option><option value="grabs">Plus téléchargés</option></select></label>
+              <span class="send-options"></span>
+              <button class="ghost" data-action="refresh-latest" title="Rafraîchir"><ha-icon icon="mdi:refresh"></ha-icon></button>
+            </div>
+          </div>
+          <div id="list-latest" class="list"></div>
+        </section>
+        <section id="pane-search" hidden>
+          <form class="search" id="search-form">
+            <ha-icon icon="mdi:magnify"></ha-icon>
+            <input id="q" type="search" placeholder="Titre, saison, qualité… (ex. « Dune 2160p »)" autocomplete="off" />
+            <button class="btn primary" type="submit">Rechercher</button>
+          </form>
+          <div class="controls">
+            <div class="chips" id="chips-search"></div>
+            <div class="row">
+              <label class="sort">Trier <select id="sort-search">
+                <option value="date">Plus récents</option><option value="seeders">Plus de sources</option>
+                <option value="size">Plus gros</option><option value="grabs">Plus téléchargés</option></select></label>
+              <span class="send-options"></span>
+            </div>
+          </div>
+          <div id="list-search" class="list"></div>
+        </section>
+        <section id="pane-downloads" hidden>
+          <div class="controls"><div class="chips" id="chips-dl">
+            <button class="chip" data-dl="c411">Ajoutés via C411</button>
+            <button class="chip" data-dl="active">En cours</button>
+            <button class="chip" data-dl="all">Tous</button>
+          </div></div>
+          <div id="list-downloads" class="list"></div>
+        </section>
+      </main>
+      <div id="toast" class="toast" hidden></div>
+    `;
+    const menu = document.createElement("ha-menu-button");
+    menu.hass = this._hass; menu.narrow = this._narrow;
+    root.getElementById("menu").appendChild(menu);
+    this._menu = menu;
+
+    root.addEventListener("click", (ev) => this._onClick(ev));
+    root.getElementById("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); this._search(false); });
+    for (const id of ["sort-latest", "sort-search"]) {
+      root.getElementById(id).addEventListener("change", (ev) => {
+        this._s.sort = ev.target.value;
+        root.getElementById("sort-latest").value = root.getElementById("sort-search").value = this._s.sort;
+        this._renderLatest(); this._renderResults();
+      });
+    }
+    root.addEventListener("change", (ev) => {
+      if (ev.target.classList.contains("qbcat")) { this._s.qbCategory = ev.target.value; this._renderSendOptions(); }
+      if (ev.target.classList.contains("paused")) { this._s.paused = ev.target.checked; this._renderSendOptions(); }
+    });
+    this._renderChips(); this._renderSendOptions(); this._renderStats();
+    this._renderLatest(); this._renderResults(); this._renderDownloads();
+  }
+
+  _onClick(ev) {
+    const el = ev.target.closest("[data-tab],[data-action],[data-cat],[data-dl]");
+    if (!el) return;
+    const s = this._s;
+    if (el.dataset.tab) return this._setTab(el.dataset.tab);
+    if (el.dataset.dl) { s.dlFilter = el.dataset.dl; this._renderDownloads(); return; }
+    if (el.dataset.cat !== undefined) {
+      const set = el.dataset.scope === "latest" ? s.latestCats : s.cats;
+      const c = el.dataset.cat;
+      if (c === "") set.clear(); else set.has(c) ? set.delete(c) : set.add(c);
+      this._renderChips();
+      if (el.dataset.scope === "latest") this._renderLatest();
+      else if (s.results) this._search(false);
+      return;
+    }
+    const a = el.dataset.action;
+    if (a === "refresh-latest") return this._loadLatest(true);
+    if (a === "more") return this._search(true);
+    if (a === "download") {
+      const list = el.dataset.list === "latest" ? s.latest : s.results;
+      const rel = (list || []).find((r) => r.guid === el.dataset.guid);
+      if (rel) this._download(rel);
+      return;
+    }
+    if (a === "goto-downloads") return this._setTab("downloads");
+    if (a === "confirm") { s.confirm = el.dataset.hash; return this._renderDownloads(); }
+    if (a === "cancel") { s.confirm = null; return this._renderDownloads(); }
+    if (["pause", "resume", "delete", "delete_files", "recheck"].includes(a)) return this._action(a, el.dataset.hash);
+  }
+
+  _setTab(tab) {
+    this._s.tab = tab;
+    const root = this.shadowRoot;
+    root.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+    for (const p of ["latest", "search", "downloads"]) root.getElementById(`pane-${p}`).hidden = p !== tab;
+    if (tab === "search") setTimeout(() => root.getElementById("q").focus(), 50);
+    if (tab === "downloads") { this._renderDownloads(); this._loadTorrents(); }
+  }
+
+  // ---------------------------------------------------------------- rendu
+  _renderChips() {
+    const root = this.shadowRoot; if (!root.getElementById("chips-latest")) return;
+    const top = this._topCats();
+    const chips = (scope, set) =>
+      `<button class="chip ${set.size ? "" : "on"}" data-scope="${scope}" data-cat="">Tout</button>` +
+      top.map(([id, label]) =>
+        `<button class="chip ${set.has(id) ? "on" : ""}" data-scope="${scope}" data-cat="${id}"><ha-icon icon="${this._icon([id])}"></ha-icon>${esc(label)}</button>`).join("");
+    root.getElementById("chips-latest").innerHTML = chips("latest", this._s.latestCats);
+    root.getElementById("chips-search").innerHTML = chips("search", this._s.cats);
+  }
+
+  _renderSendOptions() {
+    const s = this._s;
+    const cats = s.config?.qb_categories || [];
+    const opts = [`<option value="">Sans catégorie</option>`]
+      .concat(cats.map((c) => `<option value="${esc(c)}" ${c === s.qbCategory ? "selected" : ""}>${esc(c)}</option>`));
+    if (s.qbCategory && !cats.includes(s.qbCategory)) opts.push(`<option selected value="${esc(s.qbCategory)}">${esc(s.qbCategory)}</option>`);
+    const html = `<label title="Catégorie qBittorrent utilisée à l'envoi"><ha-icon icon="mdi:folder-download"></ha-icon>
+        <select class="qbcat">${opts.join("")}</select></label>
+      <label class="check" title="Ajouter en pause"><input type="checkbox" class="paused" ${s.paused ? "checked" : ""}/> en pause</label>`;
+    this.shadowRoot.querySelectorAll(".send-options").forEach((el) => (el.innerHTML = html));
+  }
+
+  _renderStats() {
+    const root = this.shadowRoot; const el = root.getElementById("stats"); if (!el) return;
+    const qb = this._s.qb;
+    if (this._s.qbError) {
+      el.innerHTML = `<span class="pill err" title="${esc(this._s.qbError)}"><ha-icon icon="mdi:lan-disconnect"></ha-icon> qBittorrent injoignable</span>`;
+    } else if (qb) {
+      el.innerHTML = `<span class="pill"><ha-icon icon="mdi:arrow-down-bold"></ha-icon>${speed(qb.dl_speed)}</span>
+        <span class="pill"><ha-icon icon="mdi:arrow-up-bold"></ha-icon>${speed(qb.up_speed)}</span>`;
+    }
+    const n = qb ? qb.c411_downloading : 0;
+    root.getElementById("dlcount").textContent = n ? String(n) : "";
+  }
+
+  _topCats() {
+    return this._s.config?.top_categories || [["2000", "Films"], ["5000", "Séries"], ["5070", "Animation"], ["3000", "Audio"], ["7000", "Ebooks"], ["1000", "Jeux"], ["4000", "Logiciels"]];
+  }
+
+  _icon(cats) {
+    const c = (cats && cats[0]) || "";
+    return SPECIAL_ICONS[c] || ICONS[c[0]] || "mdi:file";
+  }
+  _catName(cats) {
+    const all = this._s.config?.categories || {};
+    const c = (cats || []).find((x) => all[x] && !x.endsWith("000")) || (cats || [])[0];
+    return all[c] || c || "";
+  }
+
+  _sorted(list) {
+    const k = this._s.sort;
+    const arr = [...list];
+    if (k === "date") arr.sort((a, b) => (b.published || "").localeCompare(a.published || ""));
+    else arr.sort((a, b) => (b[k] || 0) - (a[k] || 0));
+    return arr;
+  }
+
+  _matchesTop(rel, set) {
+    if (!set.size) return true;
+    const top = new Set(this._topCats().map(([id]) => id));
+    return (rel.categories || []).some((c) => [...set].some((t) =>
+      c === t || (t.endsWith("000") && c[0] === t[0] && !top.has(c))));
+  }
+
+  _torrentByHash() {
+    const map = new Map();
+    for (const t of this._s.qb?.torrents || []) map.set(t.hash, t);
+    return map;
+  }
+
+  _actionHtml(rel, list, byHash) {
+    const s = this._s;
+    const t = rel.infohash && byHash.get(rel.infohash);
+    if (t) {
+      const pct = Math.floor((t.progress || 0) * 100);
+      return `<button class="btn have" data-action="goto-downloads" title="Déjà dans qBittorrent">
+        <ha-icon icon="${pct >= 100 ? "mdi:check-circle" : "mdi:progress-download"}"></ha-icon>${pct >= 100 ? "Téléchargé" : pct + " %"}</button>`;
+    }
+    if (s.sending.has(rel.guid)) return `<button class="btn primary" disabled><span class="spin"></span>Envoi…</button>`;
+    if (s.sent.has(rel.guid)) return `<button class="btn have" data-action="goto-downloads"><ha-icon icon="mdi:check"></ha-icon>Envoyé</button>`;
+    return `<button class="btn primary" data-action="download" data-list="${list}" data-guid="${esc(rel.guid)}">
+      <ha-icon icon="mdi:download"></ha-icon>Télécharger</button>`;
+  }
+
+  _releaseHtml(rel, list, byHash) {
+    return `<article class="card rel" data-guid="${esc(rel.guid)}">
+      <div class="ico"><ha-icon icon="${this._icon(rel.categories)}"></ha-icon></div>
+      <div class="body">
+        <div class="t" title="${esc(rel.title)}">${esc(rel.title)}</div>
+        <div class="meta">
+          <span class="badge">${esc(this._catName(rel.categories))}</span>
+          <span><ha-icon icon="mdi:harddisk"></ha-icon>${bytes(rel.size)}</span>
+          <span class="seed" title="Sources"><ha-icon icon="mdi:arrow-up-bold-circle"></ha-icon>${rel.seeders}</span>
+          <span class="leech" title="Clients"><ha-icon icon="mdi:arrow-down-bold-circle"></ha-icon>${rel.leechers}</span>
+          <span title="Téléchargements complétés"><ha-icon icon="mdi:check-all"></ha-icon>${rel.grabs}</span>
+          <span title="${esc(rel.published ? new Date(rel.published).toLocaleString("fr-FR") : "")}"><ha-icon icon="mdi:clock-outline"></ha-icon>${esc(ago(rel.published))}</span>
+          ${rel.freeleech ? `<span class="badge free">Freeleech</span>` : ""}
+        </div>
+      </div>
+      <div class="act">
+        ${rel.details_url ? `<a class="ghost" href="${esc(rel.details_url)}" target="_blank" rel="noopener noreferrer" title="Voir la fiche sur C411"><ha-icon icon="mdi:open-in-new"></ha-icon></a>` : ""}
+        <span class="slot">${this._actionHtml(rel, list, byHash)}</span>
+      </div>
+    </article>`;
+  }
+
+  _refreshBadges() {
+    const byHash = this._torrentByHash();
+    const root = this.shadowRoot;
+    for (const [list, items] of [["latest", this._s.latest], ["search", this._s.results || []]]) {
+      const container = root.getElementById(`list-${list}`); if (!container) continue;
+      const map = new Map(items.map((r) => [r.guid, r]));
+      container.querySelectorAll("article.rel").forEach((card) => {
+        const rel = map.get(card.dataset.guid); if (!rel) return;
+        const slot = card.querySelector(".slot");
+        const html = this._actionHtml(rel, list, byHash);
+        if (slot.dataset.h !== html) { slot.innerHTML = html; slot.dataset.h = html; }
+      });
+    }
+  }
+
+  _renderLatest() {
+    const el = this.shadowRoot.getElementById("list-latest"); if (!el) return;
+    const s = this._s;
+    if (s.latestLoading && !s.latest.length) { el.innerHTML = skeleton(); return; }
+    const items = this._sorted(s.latest.filter((r) => this._matchesTop(r, s.latestCats)));
+    const byHash = this._torrentByHash();
+    let html = "";
+    if (s.latestError) html += `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.latestError)}</div>`;
+    if (s.latestUpdate) html += `<div class="hint">Mis à jour ${esc(ago(s.latestUpdate))} · ${items.length} release${items.length > 1 ? "s" : ""}${s.latestLoading ? " · actualisation…" : ""}</div>`;
+    html += items.length ? items.map((r) => this._releaseHtml(r, "latest", byHash)).join("")
+      : empty("mdi:inbox", "Aucune nouveauté pour ces catégories.");
+    el.innerHTML = html;
+  }
+
+  _renderResults() {
+    const el = this.shadowRoot.getElementById("list-search"); if (!el) return;
+    const s = this._s;
+    if (s.searchLoading && !s.results?.length) { el.innerHTML = skeleton(); return; }
+    let html = s.searchError ? `<div class="notice err"><ha-icon icon="mdi:alert"></ha-icon>${esc(s.searchError)}</div>` : "";
+    if (s.results === null) {
+      el.innerHTML = html + empty("mdi:movie-search-outline", "Cherchez un film, une série, un album…<br><small>C411 limite l'API à 15 requêtes par minute.</small>");
+      return;
+    }
+    const byHash = this._torrentByHash();
+    const items = this._sorted(s.results);
+    html += items.length ? `<div class="hint">${items.length} résultat${items.length > 1 ? "s" : ""}${s.lastQuery ? ` pour « ${esc(s.lastQuery)} »` : ""}</div>` +
+      items.map((r) => this._releaseHtml(r, "search", byHash)).join("")
+      : empty("mdi:emoticon-sad-outline", "Aucun résultat. Essayez moins de mots ou une autre catégorie.");
+    if (s.more) html += `<button class="btn more" data-action="more" ${s.searchLoading ? "disabled" : ""}>${s.searchLoading ? '<span class="spin"></span>' : ""}Afficher plus</button>`;
+    el.innerHTML = html;
+  }
+
+  _renderDownloads() {
+    const root = this.shadowRoot; const el = root.getElementById("list-downloads"); if (!el) return;
+    const s = this._s;
+    root.querySelectorAll("#chips-dl .chip").forEach((c) => c.classList.toggle("on", c.dataset.dl === s.dlFilter));
+    if (s.qbError && !s.qb) { el.innerHTML = `<div class="notice err"><ha-icon icon="mdi:lan-disconnect"></ha-icon>${esc(s.qbError)}</div>`; return; }
+    if (!s.qb) { el.innerHTML = skeleton(); return; }
+    let list = s.qb.torrents || [];
+    if (s.dlFilter === "c411") list = list.filter((t) => t.is_c411);
+    if (s.dlFilter === "active") list = list.filter((t) => (STATES[t.state] || [])[1] === "dl" || (t.progress < 1 && !PAUSED.has(t.state)));
+    if (!list.length) {
+      el.innerHTML = empty("mdi:download-off", s.dlFilter === "c411"
+        ? "Aucun torrent envoyé depuis C411 pour l'instant.<br><small>Utilisez « Télécharger » dans Nouveautés ou Recherche.</small>"
+        : "Aucun torrent.");
+      return;
+    }
+    el.innerHTML = list.map((t) => this._torrentHtml(t)).join("");
+  }
+
+  _torrentHtml(t) {
+    const [label, kind] = STATES[t.state] || [t.state, "wait"];
+    const pct = Math.min(100, (t.progress || 0) * 100);
+    const done = pct >= 100;
+    const paused = PAUSED.has(t.state);
+    const confirm = this._s.confirm === t.hash;
+    const h = esc(t.hash);
+    const actions = confirm
+      ? `<span class="confirm">Supprimer ?
+          <button class="btn danger sm" data-action="delete" data-hash="${h}">Torrent seul</button>
+          <button class="btn danger sm" data-action="delete_files" data-hash="${h}">+ fichiers</button>
+          <button class="ghost" data-action="cancel" title="Annuler"><ha-icon icon="mdi:close"></ha-icon></button></span>`
+      : `<button class="ghost" data-action="${paused ? "resume" : "pause"}" data-hash="${h}" title="${paused ? "Reprendre" : "Pause"}">
+            <ha-icon icon="${paused ? "mdi:play" : "mdi:pause"}"></ha-icon></button>
+         <button class="ghost" data-action="recheck" data-hash="${h}" title="Revérifier"><ha-icon icon="mdi:file-check-outline"></ha-icon></button>
+         <button class="ghost" data-action="confirm" data-hash="${h}" title="Supprimer"><ha-icon icon="mdi:delete-outline"></ha-icon></button>`;
+    const left = done ? bytes(t.size) : `${bytes(t.size - (t.amount_left || 0))} / ${bytes(t.size)}`;
+    return `<article class="card tor ${kind}">
+      <div class="top">
+        <div class="t" title="${esc(t.name)}">${esc(t.name)}</div>
+        <div class="act">${actions}</div>
+      </div>
+      <div class="bar"><div style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="meta">
+        <span class="state ${kind}">${esc(label)}</span>
+        <span><b>${nf1.format(pct)} %</b> · ${left}</span>
+        ${!done && !paused ? `<span><ha-icon icon="mdi:arrow-down-bold"></ha-icon>${speed(t.dlspeed)}</span><span><ha-icon icon="mdi:timer-sand"></ha-icon>${eta(t.eta)}</span>` : ""}
+        ${t.upspeed ? `<span><ha-icon icon="mdi:arrow-up-bold"></ha-icon>${speed(t.upspeed)}</span>` : ""}
+        <span title="Sources / clients"><ha-icon icon="mdi:account-multiple"></ha-icon>${t.num_seeds} / ${t.num_leechs}</span>
+        <span title="Ratio"><ha-icon icon="mdi:scale-balance"></ha-icon>${nf1.format(t.ratio || 0)}</span>
+        ${t.category ? `<span class="badge">${esc(t.category)}</span>` : ""}
+      </div>
+    </article>`;
+  }
+
+  _toast(text, error = false) {
+    const el = this.shadowRoot.getElementById("toast"); if (!el) return;
+    el.textContent = text;
+    el.className = `toast ${error ? "err" : ""}`;
+    el.hidden = false;
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => (el.hidden = true), error ? 6000 : 3500);
+  }
+}
+
+function empty(icon, text) {
+  return `<div class="empty"><ha-icon icon="${icon}"></ha-icon><p>${text}</p></div>`;
+}
+function skeleton() {
+  return Array.from({ length: 6 }, () => `<div class="card skel"><div></div><div></div></div>`).join("");
+}
+
+const STYLE = `
+:host {
+  display: block; min-height: 100vh;
+  background: var(--primary-background-color);
+  color: var(--primary-text-color);
+  font-family: var(--ha-font-family-body, Roboto, sans-serif);
+  --c-accent: var(--primary-color, #03a9f4);
+  --c-card: var(--card-background-color, #fff);
+  --c-div: var(--divider-color, rgba(0,0,0,.12));
+  --c-sub: var(--secondary-text-color, #727272);
+  --c-ok: var(--success-color, #43a047);
+  --c-warn: var(--warning-color, #ffa600);
+  --c-err: var(--error-color, #db4437);
+  --radius: var(--ha-card-border-radius, 12px);
+}
+* { box-sizing: border-box; }
+ha-icon { --mdc-icon-size: 18px; }
+.toolbar {
+  position: sticky; top: 0; z-index: 3;
+  display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 12px 0 4px;
+  background: var(--app-header-background-color, var(--c-accent));
+  color: var(--app-header-text-color, #fff);
+  border-bottom: var(--app-header-border-bottom, none);
+}
+.toolbar .title { font-size: 20px; font-weight: 500; display: flex; align-items: center; gap: 8px; flex: 1; }
+.toolbar .title ha-icon { --mdc-icon-size: 24px; }
+.stats { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.pill { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(255,255,255,.18); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pill.err { background: var(--c-err); }
+.tabs { position: sticky; top: 56px; z-index: 2; display: flex; gap: 4px; padding: 0 12px;
+  background: var(--c-card); border-bottom: 1px solid var(--c-div); overflow-x: auto; }
+.tabs button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 14px 14px 12px;
+  color: var(--c-sub); font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs button.active { color: var(--c-accent); border-bottom-color: var(--c-accent); }
+.tabs button b { background: var(--c-accent); color: #fff; border-radius: 999px; font-size: 11px; padding: 1px 7px; }
+.tabs button b:empty { display: none; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px 12px 80px; }
+.controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--c-div); background: var(--c-card); font-size: 13px; color: var(--primary-text-color); transition: .15s; }
+.chip ha-icon { --mdc-icon-size: 16px; color: var(--c-sub); }
+.chip:hover { border-color: var(--c-accent); }
+.chip.on { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
+.chip.on ha-icon { color: #fff; }
+select, input[type=search] { font: inherit; color: var(--primary-text-color); background: var(--c-card);
+  border: 1px solid var(--c-div); border-radius: 8px; padding: 6px 8px; }
+.sort, .send-options label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--c-sub); }
+.send-options { display: inline-flex; gap: 12px; align-items: center; margin-left: auto; }
+.check input { accent-color: var(--c-accent); }
+.search { display: flex; align-items: center; gap: 8px; background: var(--c-card); border: 1px solid var(--c-div);
+  border-radius: 999px; padding: 6px 6px 6px 16px; margin-bottom: 12px; box-shadow: var(--ha-card-box-shadow, none); }
+.search:focus-within { border-color: var(--c-accent); }
+.search input { flex: 1; border: 0; background: transparent; font-size: 16px; padding: 8px 0; outline: none; min-width: 0; }
+.search ha-icon { color: var(--c-sub); --mdc-icon-size: 22px; }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.hint { font-size: 12px; color: var(--c-sub); margin: 0 4px 2px; }
+.card { background: var(--c-card); border-radius: var(--radius); border: 1px solid var(--c-div);
+  box-shadow: var(--ha-card-box-shadow, none); }
+.rel { display: flex; align-items: center; gap: 12px; padding: 10px 12px; transition: border-color .15s; }
+.rel:hover { border-color: var(--c-accent); }
+.rel .ico { flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--c-accent) 14%, transparent); color: var(--c-accent); }
+.rel .ico ha-icon { --mdc-icon-size: 22px; }
+.rel .body { flex: 1; min-width: 0; }
+.t { font-weight: 500; line-height: 1.3; word-break: break-word; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 12.5px; color: var(--c-sub);
+  font-variant-numeric: tabular-nums; align-items: center; }
+.meta span { display: inline-flex; align-items: center; gap: 3px; }
+.meta ha-icon { --mdc-icon-size: 14px; }
+.seed { color: var(--c-ok); } .leech { color: var(--c-warn); }
+.badge { padding: 1px 8px; border-radius: 999px; background: var(--secondary-background-color, rgba(0,0,0,.06)); color: var(--primary-text-color); }
+.badge.free { background: var(--c-ok); color: #fff; }
+.act { display: flex; align-items: center; gap: 4px; flex: none; }
+.btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 14px; border-radius: 999px; font-weight: 500; font-size: 14px; white-space: nowrap; min-width: 120px; }
+.btn.primary { background: var(--c-accent); color: var(--text-primary-color, #fff); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn[disabled] { opacity: .7; cursor: default; }
+.btn.have { background: color-mix(in srgb, var(--c-ok) 15%, transparent); color: var(--c-ok); }
+.btn.danger { background: var(--c-err); color: #fff; }
+.btn.sm { padding: 5px 10px; font-size: 12.5px; min-width: 0; }
+.btn.more { align-self: center; margin-top: 8px; border: 1px solid var(--c-div); color: var(--c-accent); }
+.ghost { all: unset; cursor: pointer; display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; color: var(--c-sub); }
+.ghost:hover { background: var(--secondary-background-color, rgba(0,0,0,.06)); color: var(--primary-text-color); }
+.ghost ha-icon { --mdc-icon-size: 20px; }
+.tor { padding: 12px 14px; }
+.tor .top { display: flex; align-items: flex-start; gap: 8px; }
+.tor .top .t { flex: 1; min-width: 0; }
+.bar { height: 6px; border-radius: 3px; background: var(--c-div); overflow: hidden; margin: 8px 0 6px; }
+.bar div { height: 100%; background: var(--c-accent); border-radius: 3px; transition: width .6s ease; }
+.tor.up .bar div, .tor.done .bar div { background: var(--c-ok); }
+.tor.paused .bar div { background: var(--c-sub); }
+.tor.err .bar div { background: var(--c-err); }
+.tor.wait .bar div { background: var(--c-warn); }
+.state { font-weight: 600; }
+.state.dl { color: var(--c-accent); } .state.up, .state.done { color: var(--c-ok); }
+.state.err { color: var(--c-err); } .state.wait { color: var(--c-warn); }
+.confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; flex-wrap: wrap; justify-content: flex-end; }
+.notice { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-radius: var(--radius); font-size: 14px; }
+.notice.err { background: color-mix(in srgb, var(--c-err) 12%, transparent); color: var(--c-err); }
+.empty { text-align: center; color: var(--c-sub); padding: 56px 16px; }
+.empty ha-icon { --mdc-icon-size: 56px; opacity: .5; }
+.empty small { opacity: .8; }
+.skel { height: 64px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.skel div { height: 12px; border-radius: 6px; background: var(--c-div); animation: pulse 1.2s infinite ease-in-out; }
+.skel div:last-child { width: 45%; }
+@keyframes pulse { 50% { opacity: .4; } }
+.spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: rot .7s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 10; max-width: min(92vw, 560px);
+  background: var(--primary-text-color, #222); color: var(--primary-background-color, #fff); padding: 12px 18px;
+  border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); font-size: 14px; }
+.toast.err { background: var(--c-err); color: #fff; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) {
+  .rel { flex-wrap: wrap; }
+  .rel .act { width: 100%; justify-content: flex-end; }
+  .rel .ico { display: none; }
+  .tabs button span { display: none; }
+  .tabs button { flex: 1; justify-content: center; }
+  .send-options { margin-left: 0; }
+  .stats .pill:nth-child(2) { display: none; }
+}
+`;
+
+if (!customElements.get("c411-panel")) customElements.define("c411-panel", C411Panel);
